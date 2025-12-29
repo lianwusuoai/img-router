@@ -764,11 +764,14 @@ Deno.addSignalListener("SIGINT", async () => {
   Deno.exit(0);
 });
 
-Deno.addSignalListener("SIGTERM", async () => {
-  info("Startup", "收到 SIGTERM, 关闭服务...");
-  await closeLogger();
-  Deno.exit(0);
-});
+// Windows only supports SIGINT/SIGBREAK, not SIGTERM
+if (Deno.build.os !== "windows") {
+  Deno.addSignalListener("SIGTERM", async () => {
+    info("Startup", "收到 SIGTERM, 关闭服务...");
+    await closeLogger();
+    Deno.exit(0);
+  });
+}
 
 Deno.serve({ port: PORT }, (req: Request) => {
   if (req.method === "OPTIONS") {
