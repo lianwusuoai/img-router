@@ -70,8 +70,6 @@ function detectProvider(apiKey: string): Provider {
   return "Unknown";
 }
 
-// This interface is no longer needed as the function will return a different structure
-
 function extractPromptAndImages(messages: Message[]): { prompt: string; images: string[] } {
   let prompt = "";
   const images: string[] = [];
@@ -756,7 +754,7 @@ async function handleModelScope(
     requestBody.n = 1;
   }
   
-  // 图生图模式：魔搭 API 只接受 URL 格式，需转换 Base64
+  // 图生图模式：魔搭 API 只接受 URL 格式，Base64 需先上传到图床
   if (hasImages) {
     const urlImages: string[] = [];
     
@@ -776,6 +774,18 @@ async function handleModelScope(
           const msg = e instanceof Error ? e.message : String(e);
           warn("ModelScope", `❌ Base64 图片上传失败: ${msg}`);
           // 继续处理其他图片，不中断
+        }
+      } else {
+        // 纯 Base64（无前缀），添加前缀后上传到图床
+        info("ModelScope", `检测到纯 Base64 图片，正在上传到图床...`);
+        try {
+          const dataUri = `data:image/png;base64,${img}`;
+          const imageUrl = await base64ToUrl(dataUri);
+          urlImages.push(imageUrl);
+          info("ModelScope", `✅ 纯 Base64 图片已转换为 URL: ${imageUrl}`);
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          warn("ModelScope", `❌ 纯 Base64 图片上传失败: ${msg}`);
         }
       }
     }

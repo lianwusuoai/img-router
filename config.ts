@@ -114,7 +114,7 @@ export interface ModelScopeProviderConfig {
 export const ModelScopeConfig: ModelScopeProviderConfig = {
   apiUrl: "https://api-inference.modelscope.cn/v1",
   defaultModel: "Tongyi-MAI/Z-Image-Turbo",           // 文生图模型
-  defaultEditModel: "Qwen/Qwen-Image-Edit-2511",      // 图生图/融合生图模型
+  defaultEditModel: "Qwen/Qwen-Image-Edit-2511",      // 图生图
   defaultSize: "1024x1024",       // 文生图默认尺寸
   defaultEditSize: "1328x1328",   // 图生图默认尺寸
   supportedModels: [

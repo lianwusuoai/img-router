@@ -1,6 +1,6 @@
 # ImgRouter
 
-> 智能图像生成网关 — 一个 OpenAI 兼容接口，通过chat自动路由多平台 AI 进行绘图服务
+> 智能图像生成网关 — 一个 OpenAI 兼容接口，通过 chat 自动路由多平台 AI 进行绘图服务
 
 [![Deno](https://img.shields.io/badge/Deno-2.x-000000?logo=deno)](https://deno.land/)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker)](https://www.docker.com/)
@@ -13,7 +13,9 @@
 - **多渠道支持** - 火山引擎、Gitee (模力方舟)、ModelScope (魔搭)、Hugging Face
 - **OpenAI 兼容** - 完全兼容 `/v1/chat/completions` 接口格式
 - **流式响应** - 支持 SSE 流式输出
-- **图片参考** - 支持上传参考图片进行图生图
+- **文生图 & 图生图** - 支持纯文字生成图片，也支持上传参考图片进行图片编辑
+- **Base64 永久保存** - 所有生成的图片自动转换为 Base64 返回，永久有效
+- **故障转移** - HuggingFace 渠道支持多 URL 资源池自动切换
 - **Docker 部署** - 开箱即用的容器化部署方案
 - **详细日志** - 完整的请求/响应日志记录
 
@@ -29,27 +31,50 @@
 ┌─────────────────────────────────────────────────────────────┐
 │                   API Key 检测器                             │
 │  ┌─────────────┬─────────────────┬─────────────────────┐    │
-│  │ ms-*        │ UUID 格式       │ 30-60位字母数字      │    │
-│  │ → ModelScope│ → VolcEngine    │ → Gitee             │    │
+│  │ hf_*        │ ms-*            │ UUID 格式            │    │
+│  │ → HuggingFace│ → ModelScope   │ → VolcEngine        │    │
+│  │             │                 │                     │    │
+│  │             │ 30-60位字母数字  │                     │    │
+│  │             │ → Gitee         │                     │    │
 │  └─────────────┴─────────────────┴─────────────────────┘    │
 └─────────────────────┬───────────────────────────────────────┘
                        │
            ┌───────────┼───────────┬───────────┐
            ▼           ▼           ▼           ▼
      ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐
-     │VolcEngine│ │  Gitee   │ │ModelScope│ │HuggingFac│
-     │ (火山)   │ │(模力方舟)│ │  (魔搭)  │ │ (抱抱脸)   │
-     │ 官方URL  │ │URL/Base64│ │ 官方URL  │ │ 临时URL  │
+     │VolcEngine│ │  Gitee   │ │ModelScope│ │HuggingFace│
+     │ (火山)   │ │(模力方舟)│ │  (魔搭)  │ │ (抱抱脸) │
      └──────────┘ └──────────┘ └──────────┘ └──────────┘
+           │           │           │           │
+           └───────────┴───────────┴───────────┘
+                       │
+                       ▼
+              ┌─────────────────┐
+              │  统一转换为      │
+              │  Base64 返回    │
+              │  (永久有效)     │
+              └─────────────────┘
 ```
 
-**图片返回方式说明：**
-- **火山引擎** - 返回官方 CDN 直链 URL，稳定可靠
-- **Gitee** - 优先返回官方 URL，也支持 Base64 格式
-- **ModelScope** - 返回魔搭 OSS 直链 URL
-- **Hugging Face** - 返回 HF Spaces 临时 URL（有效期有限，建议及时保存）
+### 各渠道数据流详解
 
-> ⚠️ **网络问题提示**：火山引擎返回的图片 URL 来自阿里云 OSS（`muse-ai.oss-cn-hangzhou.aliyuncs.com`），该域名只接受国内直连访问。如果你使用代理/VPN，需要将对应规则加入直连列表，否则图片可能无法正常显示。HF也是同理。
+| 渠道 | 功能 | 发送格式 | 接收格式 | 最终返回 |
+|------|------|----------|----------|----------|
+| **火山引擎** | 文生图 | JSON (prompt) | URL | Base64 |
+| **火山引擎** | 图生图 | JSON (URL 数组)¹ | URL | Base64 |
+| **Gitee** | 文生图 | JSON (prompt) | Base64 | Base64 |
+| **Gitee** | 图片编辑(同步) | FormData (Base64) | Base64 | Base64 |
+| **Gitee** | 图片编辑(异步) | FormData (Base64) | URL | Base64 |
+| **ModelScope** | 文生图 | JSON (prompt) | URL (异步轮询) | Base64 |
+| **ModelScope** | 图生图 | JSON (URL 数组)¹ | URL (异步轮询) | Base64 |
+| **HuggingFace** | 文生图 | JSON (Gradio API) | URL (SSE) | Base64 |
+| **HuggingFace** | 图生图 | Blob 上传 + JSON | URL (SSE) | Base64 |
+
+> ¹ 如果输入是 Base64 图片，会先自动上传到图床转换为 URL 再发送给 API
+
+**图片返回方式：**
+- 所有渠道生成的图片都会自动转换为 **Base64 格式**返回
+- Base64 嵌入在 Markdown 图片语法中，永久有效，无需担心链接过期
 
 ## 快速开始
 
@@ -82,51 +107,135 @@ deno task dev
 deno task start
 ```
 
-## 使用方法
+## 自定义配置
 
-### 基本请求
+所有渠道的模型、分辨率、API 地址等配置都在 `config.ts` 文件中，你可以根据需要自行修改。
 
-```bash
-curl -X POST http://localhost:10001/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer YOUR_API_KEY" \
-  -d '{
-    "model": "doubao-seedream-4-0-250828",
-    "messages": [{"role": "user", "content": "一只可爱的猫咪"}],
-    "size": "1024x1024"
-  }'
+### 配置文件结构
+
+```typescript
+// config.ts 主要配置项
+
+// 1. 图床配置（用于 Base64 转 URL）
+export const ImageBedConfig = {
+  baseUrl: "https://your-imgbed.com",
+  authCode: "your-auth-code",
+  // ...
+};
+
+// 2. 各渠道配置
+export const VolcEngineConfig = { ... };
+export const GiteeConfig = { ... };
+export const ModelScopeConfig = { ... };
+export const HuggingFaceConfig = { ... };
 ```
 
-### 带参考图片
+### 修改默认模型
 
-```bash
-curl -X POST http://localhost:10001/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer YOUR_API_KEY" \
-  -d '{
-    "model": "doubao-seedream-4-0-250828",
-    "messages": [{
-      "role": "user",
-      "content": [
-        {"type": "text", "text": "转换为水彩画风格"},
-        {"type": "image_url", "image_url": {"url": "https://example.com/image.jpg"}}
-      ]
-    }]
-  }'
+找到对应渠道的配置，修改 `defaultModel` 字段：
+
+```typescript
+// 火山引擎 - 修改默认模型
+export const VolcEngineConfig = {
+  defaultModel: "doubao-seedream-4-5-251128",  // ← 改这里
+  // ...
+};
+
+// Gitee - 修改文生图/图片编辑默认模型
+export const GiteeConfig = {
+  defaultModel: "z-image-turbo",           // 文生图默认
+  defaultEditModel: "Qwen-Image-Edit",     // 图片编辑(同步)默认
+  defaultAsyncEditModel: "Qwen-Image-Edit-2511", // 图片编辑(异步)默认
+  // ...
+};
 ```
 
-### 流式响应
+### 增删支持的模型
 
-```bash
-curl -X POST http://localhost:10001/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer YOUR_API_KEY" \
-  -d '{
-    "model": "doubao-seedream-4-0-250828",
-    "messages": [{"role": "user", "content": "美丽的风景"}],
-    "stream": true
-  }'
+修改 `supportedModels`、`editModels` 等数组：
+
+```typescript
+// 火山引擎 - 添加/删除支持的模型
+export const VolcEngineConfig = {
+  supportedModels: [
+    "doubao-seedream-4-5-251128",
+    "doubao-seedream-4-0-250828",
+    "your-new-model-id",  // ← 添加新模型
+  ],
+  // ...
+};
+
+// Gitee - 添加图片编辑模型
+export const GiteeConfig = {
+  editModels: [
+    "Qwen-Image-Edit",
+    "HiDream-E1-Full",
+    "your-new-edit-model",  // ← 添加新模型
+  ],
+  asyncEditModels: [
+    "Qwen-Image-Edit-2511",
+    // ...
+  ],
+  // ...
+};
 ```
+
+### 修改默认分辨率    可以调小到64*64 但是不可以再大了，尺寸小生图快
+
+修改 `defaultSize` 和 `defaultEditSize` 字段：
+
+```typescript
+// 火山引擎
+export const VolcEngineConfig = {
+  defaultSize: "2K",      // 文生图默认尺寸
+  defaultEditSize: "2K",  // 图生图默认尺寸
+  // ...
+};
+
+// Gitee
+export const GiteeConfig = {
+  defaultSize: "2048x2048",        // 文生图
+  defaultEditSize: "1024x1024",    // 图片编辑(同步)
+  defaultAsyncEditSize: "2048x2048", // 图片编辑(异步)
+  // ...
+};
+
+// ModelScope
+export const ModelScopeConfig = {
+  defaultSize: "1024x1024",       // 文生图
+  defaultEditSize: "1328x1328",   // 图生图
+  // ...
+};
+```
+
+### 添加 HuggingFace URL 资源池
+
+HuggingFace 支持多 URL 故障转移，可以添加更多备用地址：
+
+```typescript
+export const HuggingFaceConfig = {
+  // 文生图 URL 资源池（按优先级排序）
+  apiUrls: [
+    "https://your-space-1.hf.space",
+    "https://your-space-2.hf.space",
+    // 添加更多备用 URL...
+  ],
+  // 图生图 URL 资源池
+  editApiUrls: [
+    "https://your-edit-space.hf.space",
+  ],
+  // ...
+};
+```
+
+### 修改超时时间
+
+```typescript
+// 统一超时时间（毫秒），默认 300 秒
+export const API_TIMEOUT_MS = 300000;
+```
+
+> ⚠️ **注意**：修改配置后需要重启服务才能生效。Docker 部署时需要重新构建镜像。
 
 ## API Key 格式
 
@@ -139,6 +248,59 @@ curl -X POST http://localhost:10001/v1/chat/completions \
 
 系统根据 API Key 格式自动识别渠道，无需手动指定。
 
+## 支持的模型
+
+### 火山引擎（豆包）
+
+| 模型 | 说明 |
+|------|------|
+| `doubao-seedream-4-5-251128` | 默认模型，最新版本 |
+| `doubao-seedream-4-0-250828` | 旧版本 |
+
+### Gitee（模力方舟）
+
+**文生图：**
+| 模型 | 说明 |
+|------|------|
+| `z-image-turbo` | 默认模型 |
+
+**图片编辑（同步）：**
+| 模型 | 说明 |
+|------|------|
+| `Qwen-Image-Edit` | 默认，通义千问图片编辑 |
+| `HiDream-E1-Full` | HiDream 图片编辑 |
+| `FLUX.1-dev` | FLUX 系列 |
+| `FLUX.2-dev` | FLUX 系列 |
+| `FLUX.1-Kontext-dev` | FLUX Kontext |
+| `HelloMeme` | Meme 生成 |
+| `Kolors` | 上色模型 |
+| `OmniConsistency` | 一致性编辑 |
+| `InstantCharacter` | 角色生成 |
+| `DreamO` | DreamO 模型 |
+| `LongCat-Image-Edit` | LongCat 编辑 |
+| `AnimeSharp` | 动漫风格 |
+
+**图片编辑（异步）：**
+| 模型 | 说明 |
+|------|------|
+| `Qwen-Image-Edit-2511` | 默认，通义千问最新版 |
+| `LongCat-Image-Edit` | LongCat 编辑 |
+| `FLUX.1-Kontext-dev` | FLUX Kontext |
+
+### ModelScope（魔搭）
+
+| 模型 | 类型 | 说明 |
+|------|------|------|
+| `Tongyi-MAI/Z-Image-Turbo` | 文生图 | 默认模型 |
+| `Qwen/Qwen-Image-Edit-2511` | 图生图 | 图片编辑模型 |
+
+### Hugging Face
+
+| 模型 | 类型 | 说明 |
+|------|------|------|
+| `z-image-turbo` | 文生图 | 默认模型 |
+| `Qwen-Image-Edit-2511` | 图生图 | 图片编辑模型 |
+
 ## 配置
 
 ### 环境变量
@@ -146,57 +308,7 @@ curl -X POST http://localhost:10001/v1/chat/completions \
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
 | `PORT` | 监听端口 | `10001` |
-| `LOG_LEVEL` | 日志级别 | `INFO` |
-
-### 默认模型
-
-| 渠道 | 默认模型 |
-|------|---------|
-| 火山引擎 | `doubao-seedream-4-0-250828` |
-| Gitee | `z-image-turbo` |
-| ModelScope | `Tongyi-MAI/Z-Image-Turbo` |
-| Hugging Face | `z-image-turbo` |
-
-## 响应格式
-
-### 成功响应
-
-```json
-{
-  "id": "chatcmpl-xxx",
-  "object": "chat.completion",
-  "created": 1734323445,
-  "model": "doubao-seedream-4-0-250828",
-  "choices": [{
-    "index": 0,
-    "message": {
-      "role": "assistant",
-      "content": "![Generated Image](https://example.com/image.jpg)"
-    },
-    "finish_reason": "stop"
-  }]
-}
-```
-
-### 错误响应
-
-```json
-{
-  "error": {
-    "message": "API Error: ...",
-    "type": "server_error",
-    "provider": "VolcEngine"
-  }
-}
-```
-
-## 开发
-
-```bash
-deno fmt      # 格式化代码
-deno lint     # 代码检查
-deno check main.ts  # 类型检查
-```
+| `LOG_LEVEL` | 日志级别 (DEBUG/INFO/WARN/ERROR) | `INFO` |
 
 ## 许可证
 
