@@ -20,6 +20,9 @@ Thumbs.db
 # Rooroo 工作目录
 .rooroo/
 
+# ampcode 工作目录
+.amp/
+
 # Docker Compose 覆盖配置（本地使用）
 docker-compose.override.yml
 

@@ -12,10 +12,10 @@ import {
 } from "./logger.ts";
 import {
   VolcEngineConfig, GiteeConfig, ModelScopeConfig, HuggingFaceConfig,
-  ImageBedConfig, API_TIMEOUT_MS, PORT,
+  PollinationsConfig, ImageBedConfig, API_TIMEOUT_MS, PORT,
 } from "./config.ts";
 
-type Provider = "VolcEngine" | "Gitee" | "ModelScope" | "HuggingFace" | "Unknown";
+type Provider = "VolcEngine" | "Gitee" | "ModelScope" | "HuggingFace" | "Pollinations" | "Unknown";
 
 interface TextContentItem {
   type: "text";
@@ -73,6 +73,13 @@ interface ImagesEditRequest {
 
 function detectProvider(apiKey: string): Provider {
   if (!apiKey) return "Unknown";
+
+  // Pollinations - pk_ 或 sk_ 开头
+  if (apiKey.startsWith("pk_") || apiKey.startsWith("sk_")) {
+    logProviderRouting("Pollinations", apiKey.substring(0, 3));
+    return "Pollinations";
+  }
+
   if (apiKey.startsWith("hf_")) {
     logProviderRouting("HuggingFace", apiKey.substring(0, 4));
     return "HuggingFace";
@@ -218,7 +225,8 @@ async function fetchWithTimeout(
   const isOfficialApi = url.includes("volces.com") ||
                         url.includes("gitee.com") ||
                         url.includes("modelscope.cn") ||
-                        url.includes("hf.space");
+                        url.includes("hf.space") ||
+                        url.includes("pollinations.ai");
 
   if (url.startsWith("http") && !isOfficialApi) {
     if (!isSafeUrl(url)) {
@@ -1392,8 +1400,207 @@ function extractImageUrlFromSSE(sseStream: string, baseUrl?: string): string | n
   return null;
 }
 
-/** 处理 /v1/images/generations 端点 */
-async function handleImagesGenerations(req: Request): Promise<Response> {
+/** Pollinations 文生图 - 使用简单的 GET 端点 */
+async function pollinationsGenerateImage(
+  apiKey: string,
+  prompt: string,
+  reqBody: ChatRequest
+): Promise<string> {
+  const model = reqBody.model || PollinationsConfig.defaultModel;
+  const size = reqBody.size || PollinationsConfig.defaultSize;
+  const [width, height] = size.split("x").map(Number);
+  
+  const encodedPrompt = encodeURIComponent(prompt);
+  const url = `${PollinationsConfig.apiUrl}${PollinationsConfig.imageEndpoint}/${encodedPrompt}`;
+  
+  // 构建请求参数，使用配置中的特有参数
+  const params = new URLSearchParams({
+    model,
+    width: String(width || 1024),
+    height: String(height || 1024),
+  });
+
+  // 添加 Pollinations 参数（仅使用全局配置）
+  // seed：按配置原样透传（-1 也直接传给服务端）；未配置则不传
+  if (PollinationsConfig.seed !== undefined) params.set("seed", String(PollinationsConfig.seed));
+
+  if (PollinationsConfig.quality !== undefined) params.set("quality", String(PollinationsConfig.quality));
+  if (PollinationsConfig.transparent) params.set("transparent", "true");
+  if (PollinationsConfig.guidanceScale !== undefined) params.set("guidance_scale", String(PollinationsConfig.guidanceScale));
+
+  if (PollinationsConfig.nologo) params.set("nologo", "true");
+  if (PollinationsConfig.enhance) params.set("enhance", "true");
+  if (PollinationsConfig.negativePrompt) params.set("negative_prompt", PollinationsConfig.negativePrompt);
+  if (PollinationsConfig.private) params.set("private", "true");
+  if (PollinationsConfig.nofeed) params.set("nofeed", "true");
+  if (PollinationsConfig.safe) params.set("safe", "true");
+  
+  const fullUrl = `${url}?${params.toString()}`;
+  
+  info("Pollinations", `请求 URL: ${fullUrl.substring(0, 100)}...`);
+  
+  const response = await fetchWithTimeout(fullUrl, {
+    method: "GET",
+    headers: {
+      "Authorization": `Bearer ${apiKey}`,
+    },
+  });
+  
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Pollinations API 错误 (${response.status}): ${errorText}`);
+  }
+  
+  // GET 端点直接返回图片二进制，转换为 Base64
+  const arrayBuffer = await response.arrayBuffer();
+  const uint8Array = new Uint8Array(arrayBuffer);
+  
+  let mimeType = detectImageMimeType(uint8Array);
+  if (!mimeType) {
+    const contentType = response.headers.get("content-type") || "";
+    if (contentType.startsWith("image/")) {
+      mimeType = contentType.split(";")[0].trim();
+    } else {
+      mimeType = "image/png";
+    }
+  }
+  
+  const base64 = encodeBase64(uint8Array);
+  return `data:${mimeType};base64,${base64}`;
+}
+
+/** Pollinations 图生图 - 使用 GET /image 端点 + image 参数 */
+async function pollinationsImageEdit(
+  apiKey: string,
+  prompt: string,
+  images: string[],
+  reqBody: ChatRequest
+): Promise<string> {
+  // 选择支持图片输入的模型
+  let model = reqBody.model || PollinationsConfig.defaultEditModel;
+  
+  // 如果用户指定的模型不支持图生图，自动切换到默认图生图模型
+  if (!PollinationsConfig.editModels.includes(model)) {
+    info("Pollinations", `模型 ${model} 不支持图生图，切换到 ${PollinationsConfig.defaultEditModel}`);
+    model = PollinationsConfig.defaultEditModel;
+  }
+  
+  const size = reqBody.size || PollinationsConfig.defaultEditSize;
+  const [width, height] = size.split("x").map(Number);
+  
+  // 使用 GET /image 端点，通过 image 参数传递图片 URL
+  // 多张图片用 | 分隔
+  const imageParam = images.join("|");
+  
+  const encodedPrompt = encodeURIComponent(prompt);
+  const url = `${PollinationsConfig.apiUrl}${PollinationsConfig.imageEndpoint}/${encodedPrompt}`;
+  
+  // 构建请求参数
+  const params = new URLSearchParams({
+    model,
+    width: String(width || 1024),
+    height: String(height || 1024),
+    image: imageParam,
+  });
+
+  // 添加 Pollinations 参数
+  if (PollinationsConfig.seed !== undefined) params.set("seed", String(PollinationsConfig.seed));
+  if (PollinationsConfig.quality !== undefined) params.set("quality", String(PollinationsConfig.quality));
+  if (PollinationsConfig.transparent) params.set("transparent", "true");
+  if (PollinationsConfig.guidanceScale !== undefined) params.set("guidance_scale", String(PollinationsConfig.guidanceScale));
+  if (PollinationsConfig.nologo) params.set("nologo", "true");
+  if (PollinationsConfig.enhance) params.set("enhance", "true");
+  if (PollinationsConfig.negativePrompt) params.set("negative_prompt", PollinationsConfig.negativePrompt);
+  if (PollinationsConfig.private) params.set("private", "true");
+  if (PollinationsConfig.nofeed) params.set("nofeed", "true");
+  if (PollinationsConfig.safe) params.set("safe", "true");
+  
+  const fullUrl = `${url}?${params.toString()}`;
+  
+  info("Pollinations", `图生图请求，模型: ${model}, 图片数: ${images.length}`);
+  debug("Pollinations", `请求 URL: ${fullUrl.substring(0, 150)}...`);
+  
+  const response = await fetchWithTimeout(fullUrl, {
+    method: "GET",
+    headers: {
+      "Authorization": `Bearer ${apiKey}`,
+    },
+  });
+  
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Pollinations API 错误 (${response.status}): ${errorText}`);
+  }
+  
+  // GET 端点直接返回图片二进制，转换为 Base64
+  const arrayBuffer = await response.arrayBuffer();
+  const uint8Array = new Uint8Array(arrayBuffer);
+  
+  let mimeType = detectImageMimeType(uint8Array);
+  if (!mimeType) {
+    const contentType = response.headers.get("content-type") || "";
+    if (contentType.startsWith("image/")) {
+      mimeType = contentType.split(";")[0].trim();
+    } else {
+      mimeType = "image/png";
+    }
+  }
+  
+  const base64 = encodeBase64(uint8Array);
+  return `data:${mimeType};base64,${base64}`;
+}
+
+/** Pollinations 图片生成 */
+async function handlePollinations(
+  apiKey: string,
+  reqBody: ChatRequest,
+  prompt: string,
+  images: string[],
+  requestId: string
+): Promise<string> {
+  const startTime = Date.now();
+  const hasImages = images.length > 0;
+  const apiType = hasImages ? "image_edit" : "generate_image";
+  logApiCallStart("Pollinations", apiType);
+  
+  logFullPrompt("Pollinations", requestId, prompt);
+  if (images.length > 0) {
+    logInputImages("Pollinations", requestId, images);
+  }
+  
+  const model = reqBody.model || (hasImages ? PollinationsConfig.defaultEditModel : PollinationsConfig.defaultModel);
+  const size = reqBody.size || PollinationsConfig.defaultSize;
+  logImageGenerationStart("Pollinations", requestId, model, size, prompt.length);
+  
+  try {
+    let imageData: string;
+    
+    if (hasImages) {
+      // 图生图：使用 GET /image 端点 + image 参数，直接返回 data URL
+      imageData = await pollinationsImageEdit(apiKey, prompt, images, reqBody);
+    } else {
+      // 文生图：使用 GET 端点，直接返回 data URL
+      imageData = await pollinationsGenerateImage(apiKey, prompt, reqBody);
+    }
+    
+    const result = `![Generated Image](${imageData})`;
+    const duration = Date.now() - startTime;
+    
+    logApiCallEnd("Pollinations", apiType, true, duration);
+    logGeneratedImages("Pollinations", requestId, [{ b64_json: imageData.substring(0, 100) + "..." }]);
+    logImageGenerationComplete("Pollinations", requestId, 1, duration);
+    
+    return result;
+    
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    logApiCallEnd("Pollinations", apiType, false, Date.now() - startTime);
+    logImageGenerationFailed("Pollinations", requestId, msg);
+    throw e;
+  }
+}
+
+async function handleChatCompletions(req: Request): Promise<Response> {
   const url = new URL(req.url);
   const requestId = generateRequestId();
 
@@ -1728,6 +1935,9 @@ async function handleChatCompletions(req: Request): Promise<Response> {
       case "HuggingFace":
         imageContent = await handleHuggingFace(apiKey, requestBody, prompt, images, requestId);
         break;
+      case "Pollinations":
+        imageContent = await handlePollinations(apiKey, requestBody, prompt, images, requestId);
+        break;
     }
 
     const responseId = `chatcmpl-${crypto.randomUUID()}`;
@@ -1872,7 +2082,7 @@ if (logLevel && logLevel in LogLevel) {
 const version = await getVersion();
 info("Startup", `🚀 服务启动端口 ${PORT}`);
 info("Startup", `📦 版本: ${version}`);
-info("Startup", "🔧 支持: 火山引擎, Gitee, ModelScope, HuggingFace");
+info("Startup", "🔧 支持: 火山引擎, Gitee, ModelScope, HuggingFace, Pollinations");
 info("Startup", "📡 端点: /v1/chat/completions, /v1/images/generations, /v1/images/edits");
 info("Startup", `📁 日志目录: ./data/logs`);
 

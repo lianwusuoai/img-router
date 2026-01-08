@@ -10,7 +10,7 @@
 ## 特性
 
 - **智能路由** - 根据 API Key 格式自动识别并分发到对应渠道
-- **多渠道支持** - 火山引擎、Gitee (模力方舟)、ModelScope (魔搭)、Hugging Face
+- **多渠道支持** - 火山引擎、Gitee (模力方舟)、ModelScope (魔搭)、Hugging Face、Pollinations
 - **OpenAI 完全兼容** - 支持 `/v1/chat/completions`、`/v1/images/generations`、`/v1/images/edits` 接口
 - **流式响应** - 支持 SSE 流式输出
 - **文生图 & 图生图** - 支持纯文字生成图片，也支持上传参考图片进行图片编辑
@@ -35,19 +35,19 @@
 │  │ hf_*        │ ms-*            │ UUID 格式            │    │
 │  │ → HuggingFace│ → ModelScope   │ → VolcEngine        │    │
 │  │             │                 │                     │    │
-│  │             │ 30-60位字母数字  │                     │    │
-│  │             │ → Gitee         │                     │    │
+│  │ pk_* / sk_* │ 30-60位字母数字  │                     │    │
+│  │ → Pollinations│ → Gitee       │                     │    │
 │  └─────────────┴─────────────────┴─────────────────────┘    │
 └─────────────────────┬───────────────────────────────────────┘
                        │
-           ┌───────────┼───────────┬───────────┐
-           ▼           ▼           ▼           ▼
-     ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐
-     │VolcEngine│ │  Gitee   │ │ModelScope│ │HuggingFace│
-     │ (火山)   │ │(模力方舟)│ │  (魔搭)  │ │ (抱抱脸) │
-     └──────────┘ └──────────┘ └──────────┘ └──────────┘
-           │           │           │           │
-           └───────────┴───────────┴───────────┘
+           ┌───────────┼───────────┬───────────┬───────────┐
+           ▼           ▼           ▼           ▼           ▼
+     ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐
+     │VolcEngine│ │  Gitee   │ │ModelScope│ │HuggingFace│ │Pollinations│
+     │ (火山)   │ │(模力方舟)│ │  (魔搭)  │ │ (抱抱脸) │ │          │
+     └──────────┘ └──────────┘ └──────────┘ └──────────┘ └──────────┘
+           │           │           │           │           │
+           └───────────┴───────────┴───────────┴───────────┘
                        │
                        ▼
               ┌─────────────────┐
@@ -70,6 +70,8 @@
 | **ModelScope** | 图生图 | JSON (URL 数组)¹ | URL (异步轮询) | Base64 |
 | **HuggingFace** | 文生图 | JSON (Gradio API) | URL (SSE) | Base64 |
 | **HuggingFace** | 图生图 | Blob 上传 + JSON | URL (SSE) | Base64 |
+| **Pollinations** | 文生图 | GET (URL 参数) | 图片二进制 | Base64 |
+| **Pollinations** | 图生图 | JSON (OpenAI 兼容) | URL / Base64 | Base64 |
 
 > ¹ 如果输入是 Base64 图片，会先自动上传到图床转换为 URL 再发送给 API
 
@@ -151,6 +153,7 @@ export const VolcEngineConfig = { ... };
 export const GiteeConfig = { ... };
 export const ModelScopeConfig = { ... };
 export const HuggingFaceConfig = { ... };
+export const PollinationsConfig = { ... };
 ```
 
 ### 修改默认模型
@@ -251,6 +254,50 @@ export const HuggingFaceConfig = {
 };
 ```
 
+### 配置 Pollinations 参数
+
+Pollinations 支持多种特有参数，可以在 `config.ts` 中配置：
+
+```typescript
+export const PollinationsConfig = {
+  // 基础配置
+  defaultModel: "flux",              // 文生图默认模型
+  defaultEditModel: "gptimage",      // 图生图默认模型
+  defaultSize: "1024x1024",          // 文生图默认尺寸
+  defaultEditSize: "1024x1024",      // 图生图默认尺寸
+
+  // 图像生成参数
+  seed: -1,                          // 随机种子：-1 表示每次随机
+  quality: "hd",                     // 质量：low/medium/high/hd
+  transparent: false,                // 透明背景
+  guidanceScale: undefined,          // 提示词遵循强度(1-20)，不填则使用服务端默认
+  
+  // 特有参数
+  enhance: true,                     // 让 AI 优化 prompt 以获得更好效果
+  negativePrompt: "",                // 负面提示词（避免生成的内容）
+  private: true,                     // 隐藏图片，不显示在公共 feed
+  nologo: true,                      // 移除 Pollinations 水印
+  nofeed: false,                     // 不添加到公共 feed
+  safe: false,                       // 启用安全内容过滤器
+  // ...
+};
+```
+
+**参数说明：**
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `seed` | number | -1 | 随机种子，-1 表示每次随机，固定值可复现结果 |
+| `quality` | string | "hd" | 图像质量：low/medium/high/hd |
+| `transparent` | boolean | false | 生成透明背景图片 |
+| `guidanceScale` | number | undefined | 提示词遵循强度 (1-20)，不填使用服务端默认 |
+| `enhance` | boolean | true | 让 AI 自动优化你的 prompt 以获得更好的生成效果 |
+| `negativePrompt` | string | "" | 负面提示词，指定要避免生成的内容（如 "blurry, low quality"） |
+| `private` | boolean | true | 将生成的图片设为私密，不显示在公共 feed 中 |
+| `nologo` | boolean | true | 移除 Pollinations 水印（需要有效的 API Key） |
+| `nofeed` | boolean | false | 不将图片添加到公共 feed |
+| `safe` | boolean | false | 启用安全内容过滤器，过滤不当内容 |
+
 ### 修改超时时间
 
 ```typescript
@@ -268,6 +315,7 @@ export const API_TIMEOUT_MS = 300000;
 | Gitee | 30-60位字母数字 | `abc123def456...` |
 | ModelScope | `ms-` 开头 | `ms-xxxxxxxxxx` |
 | Hugging Face | `hf_` 开头 | `hf_xxxxxxxxxx` |
+| Pollinations | `pk_` 或 `sk_` 开头 | `pk_3Ff4YHCp8TkauKXq` 或 `sk_zzqmqZp3Jex...` |
 
 系统根据 API Key 格式自动识别渠道，无需手动指定。
 
@@ -323,6 +371,27 @@ export const API_TIMEOUT_MS = 300000;
 |------|------|------|
 | `z-image-turbo` | 文生图 | 默认模型 |
 | `Qwen-Image-Edit-2511` | 图生图 | 图片编辑模型 |
+
+### Pollinations 模型
+
+| 模型 | 类型 | 说明 |
+|------|------|------|
+| `flux` | 文生图 | 默认模型，Flux Schnell |
+| `turbo` | 文生图 | SDXL Turbo 单步实时 |
+| `zimage` | 文生图 | Z-Image Turbo + 2x放大 |
+| `kontext` | 文生图/图生图 | FLUX.1 Kontext 编辑 |
+| `nanobanana` | 文生图/图生图 | Gemini 2.5 Flash Image |
+| `nanobanana-pro` | 文生图/图生图 | Gemini 3 Pro Image (4K) |
+| `seedream` | 文生图/图生图 | ByteDance Seedream 4.0 |
+| `seedream-pro` | 文生图/图生图 | ByteDance Seedream 4.5 (4K) |
+| `gptimage` | 文生图/图生图 | GPT Image Mini（图生图默认） |
+| `gptimage-large` | 文生图/图生图 | GPT Image 1.5 高级版 |
+
+> **Pollinations 密钥说明：**
+> - `pk_` 开头：公共密钥，有速率限制 (1 pollen/小时/IP)
+> - `sk_` 开头：私密密钥，无速率限制，适合服务端使用
+>
+> **尺寸说明：** 部分模型对尺寸有限制，如 `gptimage-large` 可能会自动调整到最接近的支持尺寸
 
 ## 配置
 

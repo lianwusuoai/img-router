@@ -14,7 +14,7 @@ export const ImageBedConfig = {
 };
 
 // ================= 渠道配置 =================
-// 支持：火山引擎 (VolcEngine/豆包)、Gitee (模力方舟)、ModelScope (魔搭)、Hugging Face
+// 支持：火山引擎 (VolcEngine/豆包)、Gitee (模力方舟)、ModelScope (魔搭)、Hugging Face、Pollinations
 
 // 渠道配置接口
 export interface ProviderConfig {
@@ -160,6 +160,71 @@ export const HuggingFaceConfig: HuggingFaceProviderConfigExtended = {
   editModels: [
     "Qwen-Image-Edit-2511",
   ],
+};
+
+// Pollinations 配置接口
+export interface PollinationsProviderConfig {
+  apiUrl: string;                    // API 网关地址
+  imageEndpoint: string;             // 图片生成端点
+  defaultModel: string;              // 文生图默认模型
+  defaultEditModel: string;          // 图生图默认模型
+  defaultSize: string;               // 文生图默认尺寸
+  defaultEditSize: string;           // 图生图默认尺寸
+  supportedModels: string[];         // 文生图支持的模型
+  editModels: string[];              // 图生图支持的模型
+  // Pollinations 特有参数
+  seed?: number;                     // 随机种子：-1 表示每次随机（与官方文档一致）
+  quality?: "low" | "medium" | "high" | "hd"; // 质量档位
+  transparent: boolean;              // 透明背景
+  guidanceScale?: number;            // 提示词遵循强度（1-20），不填则由服务端默认
+  enhance: boolean;                  // 让 AI 优化 prompt 以获得更好效果
+  negativePrompt: string;            // 负面提示词，避免生成的内容
+  private: boolean;                  // 隐藏图片，不显示在公共 feed
+  nologo: boolean;                   // 移除 Pollinations 水印
+  nofeed: boolean;                   // 不添加到公共 feed
+  safe: boolean;                     // 启用安全内容过滤器
+}
+
+// Pollinations 配置 (支持 pk_ 公共密钥和 sk_ 私密密钥)
+export const PollinationsConfig: PollinationsProviderConfig = {
+  apiUrl: "https://gen.pollinations.ai",
+  imageEndpoint: "/image",
+  defaultModel: "flux",
+  defaultEditModel: "gptimage",
+  defaultSize: "1024x1024",          // 文生图默认尺寸
+  defaultEditSize: "1024x1024",      // 图生图默认尺寸
+  supportedModels: [
+    "flux",           // Flux Schnell - 快速高质量
+    "turbo",          // SDXL Turbo - 单步实时
+    "zimage",         // Z-Image Turbo
+    "kontext",        // FLUX.1 Kontext - 支持图生图
+    "nanobanana",     // Gemini 2.5 Flash Image
+    "nanobanana-pro", // Gemini 3 Pro Image (4K)
+    "seedream",       // Seedream 4.0
+    "seedream-pro",   // Seedream 4.5 Pro (4K)
+    "gptimage",       // GPT Image Mini
+    "gptimage-large", // GPT Image 1.5
+  ],
+  editModels: [
+    "gptimage",       // GPT Image Mini - 图生图首选
+    "gptimage-large", // GPT Image 1.5
+    "kontext",        // FLUX.1 Kontext
+    "nanobanana",     // Gemini 2.5 Flash Image
+    "nanobanana-pro", // Gemini 3 Pro Image
+    "seedream",       // Seedream 支持图片输入
+    "seedream-pro",
+  ],
+  // Pollinations 特有参数默认值
+  seed: -1,                          // -1 表示每次随机
+  quality: "hd",                // 官方文档默认 medium，有low|medium|high|hd选项
+  transparent: false,
+  guidanceScale: undefined,
+  enhance: true,                     // 默认优化 prompt
+  negativePrompt: "",                // 默认无负面提示词（API 默认为 "worst quality, blurry"）
+  private: true,                     // 默认私密
+  nologo: true,                      // 默认移除水印
+  nofeed: false,                     // 默认添加到 feed
+  safe: false,                       // 默认不启用安全过滤
 };
 
 // 统一超时时间：300秒（适用于所有渠道的 API 请求，给生图留足时间）
