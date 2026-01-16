@@ -6,6 +6,7 @@
  */
 
 import type { GenerationResult, ImageGenerationRequest } from "../types/index.ts";
+import type { ImagesBlendRequest } from "../types/request.ts";
 import { getProviderTaskDefaults } from "../config/manager.ts";
 
 /**
@@ -51,12 +52,24 @@ export interface ProviderConfig {
   defaultModel: string;
   /** 默认生成尺寸 */
   defaultSize: string;
+  /** 默认生成数量 */
+  defaultCount?: number;
   /** 支持的图片编辑模型列表（可选） */
   editModels?: string[];
   /** 默认图片编辑模型（可选） */
   defaultEditModel?: string;
   /** 默认图片编辑尺寸（可选） */
   defaultEditSize?: string;
+  /** 默认图片编辑生成数量（可选） */
+  defaultEditCount?: number;
+  /** 支持的融合生图模型列表（可选） */
+  blendModels?: string[];
+  /** 默认融合生图模型（可选） */
+  defaultBlendModel?: string;
+  /** 默认融合生图尺寸（可选） */
+  defaultBlendSize?: string;
+  /** 默认融合生图数量（可选） */
+  defaultBlendCount?: number;
 }
 
 /**
@@ -124,6 +137,20 @@ export interface IProvider {
    * @returns {string | null} 如果验证失败返回错误信息，否则返回 null
    */
   validateRequest(request: ImageGenerationRequest): string | null;
+
+  /**
+   * 融合生图 (Multi-Image Fusion)
+   * 
+   * @param apiKey - API 密钥
+   * @param request - 融合请求参数
+   * @param options - 生成选项
+   * @returns 生成结果
+   */
+  blend(
+    apiKey: string,
+    request: ImagesBlendRequest,
+    options: GenerationOptions,
+  ): Promise<GenerationResult>;
 }
 
 /**
@@ -194,6 +221,30 @@ export abstract class BaseProvider implements IProvider {
   }
 
   /**
+   * 图片编辑
+   * 默认实现：抛出未实现错误
+   */
+  edit(
+    _apiKey: string,
+    _request: ImageGenerationRequest,
+    _options: GenerationOptions,
+  ): Promise<GenerationResult> {
+    return Promise.reject(new Error(`${this.name} 尚未实现图片编辑功能`));
+  }
+
+  /**
+   * 融合生图
+   * 默认实现：抛出未实现错误
+   */
+  blend(
+    _apiKey: string,
+    _request: ImagesBlendRequest,
+    _options: GenerationOptions,
+  ): Promise<GenerationResult> {
+    return Promise.reject(new Error(`${this.name} 尚未实现融合生图功能`));
+  }
+
+  /**
    * 智能选择模型
    * 优先级：请求指定 -> 运行时覆盖配置 -> 默认配置
    *
@@ -254,6 +305,48 @@ export abstract class BaseProvider implements IProvider {
     }
 
     return this.config.defaultSize;
+  }
+
+  /**
+   * 智能选择生成数量
+   * 优先级：请求指定 -> 运行时覆盖配置 -> 默认配置 -> 1
+   * 
+   * 特殊逻辑：
+   * 如果 requestCount 为 1（通常是 WebUI 的默认/错误行为），但 config.defaultCount 显式设置为大于 1，
+   * 并且启用了 forceDefaultCount 策略（这里通过判断 defaultCount > 1 隐式启用），
+   * 则优先使用 defaultCount。
+   * 这解决了某些 WebUI 无法正确发送 n>1 参数的问题。
+   *
+   * @param {number} [requestCount] - 请求中指定的数量
+   * @param {boolean} hasImages - 是否包含输入图片
+   * @returns {number} 最终选定的数量
+   */
+  protected selectCount(requestCount: number | undefined, hasImages: boolean): number {
+    const override = getProviderTaskDefaults(this.name, hasImages ? "edit" : "text");
+    const defaultConfig = hasImages ? this.config.defaultEditCount : this.config.defaultCount;
+    
+    // 1. 优先检查运行时动态配置 (Highest Priority)
+    if (override.n !== undefined && override.n !== null) {
+      return override.n;
+    }
+
+    // 2. 检查静态默认配置是否强于请求 (Special Logic for WebUI compatibility)
+    // 如果请求是 n=1 (可能是默认值)，但我们在配置里显式设置了 > 1 的默认值，则使用配置值
+    if (requestCount === 1 && defaultConfig !== undefined && defaultConfig > 1) {
+        return defaultConfig;
+    }
+
+    // 3. 使用请求中的数量
+    if (requestCount !== undefined) {
+      return requestCount;
+    }
+
+    // 4. 使用静态默认配置
+    if (defaultConfig !== undefined) {
+      return defaultConfig;
+    }
+
+    return 1;
   }
 
   /**

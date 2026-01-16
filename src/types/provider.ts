@@ -39,4 +39,6 @@ export interface GenerationResult {
   error?: string;
   /** 生成过程耗时（毫秒） */
   duration?: number;
+  /** 流式响应流 (ReadableStream) */
+  stream?: ReadableStream;
 }

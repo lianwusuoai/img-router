@@ -69,6 +69,18 @@ export interface BaseProviderConfig {
   defaultModel: string;
   /** 默认图片尺寸 */
   defaultSize: string;
+  /** 默认生成数量 */
+  defaultCount?: number;
+  /** 默认编辑生成数量 */
+  defaultEditCount?: number;
+  /** 支持的融合生图模型列表（可选） */
+  blendModels?: string[];
+  /** 默认融合生图模型（可选） */
+  defaultBlendModel?: string;
+  /** 默认融合生图尺寸（可选） */
+  defaultBlendSize?: string;
+  /** 默认融合生图数量（可选） */
+  defaultBlendCount?: number;
   /** 支持的模型列表 */
   supportedModels: string[];
 }
@@ -291,6 +303,8 @@ export interface RuntimeProviderConfig {
   text?: ProviderTaskDefaults;
   /** 编辑任务默认配置 */
   edit?: ProviderTaskDefaults;
+  /** 融合生图任务默认配置 */
+  blend?: ProviderTaskDefaults;
 }
 
 /**
@@ -326,16 +340,32 @@ export type DoubaoProviderConfig = DoubaoConfig;
 
 /** 支持的图片尺寸列表 */
 export const SUPPORTED_SIZES = [
-  "256x256", "512x512", "1024x1024", "1024x768", "768x1024", "2048x2048"
+  "256x256",
+  "512x512",
+  "1024x1024",
+  "1024x768",
+  "768x1024",
+  "2048x2048",
+  "2304x1728",
+  "1728x2304",
+  "2560x1440",
+  "1440x2560",
+  "2496x1664",
+  "1664x2496",
+  "3024x1296",
+  "4096x4096",
 ];
 
 /** 宽高比到具体尺寸的映射 */
 export const SIZE_MAPPING: Record<string, string> = {
-  "1:1": "1024x1024",
-  "4:3": "1024x768",
-  "3:4": "768x1024",
-  "16:9": "1024x576",
-  "9:16": "576x1024"
+  "1:1": "2048x2048",
+  "4:3": "2304x1728",
+  "3:4": "1728x2304",
+  "16:9": "2560x1440",
+  "9:16": "1440x2560",
+  "3:2": "2496x1664",
+  "2:3": "1664x2496",
+  "21:9": "3024x1296",
 };
 
 /** 
@@ -365,7 +395,7 @@ const DEFAULT_CONFIG: AppConfig = {
   },
   defaults: {
     imageModel: "doubao-seedream-4-5-251128",
-    imageSize: "1024x1024",
+    imageSize: "2048x2048",
     imageQuality: "standard",
     imageCount: 1
   },
@@ -373,9 +403,10 @@ const DEFAULT_CONFIG: AppConfig = {
     doubao: {
       enabled: true,
       apiUrl: "https://ark.cn-beijing.volces.com/api/v3/images/generations",
-      defaultModel: "test-doubao-model",
-      defaultSize: "1024x1024",
-      defaultEditSize: "2K",
+      defaultModel: "doubao-seedream-4-5-251128",
+      defaultSize: "2048x2048",
+      defaultCount: Number(process.env.DOUBAO_DEFAULT_COUNT) || 1, // 优先读取环境变量，默认为 1
+      defaultEditSize: "2048x2048",
       supportedModels: [
         "doubao-seedream-4-5-251128",
         "doubao-seedream-4-0-250828"
@@ -526,9 +557,11 @@ class ConfigManager {
   private config: AppConfig;
   private runtimeConfig: RuntimeConfig;
   private readonly runtimeConfigPath: string;
+  private readonly legacyRuntimeConfigPath: string;
 
   constructor() {
-    this.runtimeConfigPath = path.resolve(process.cwd(), 'runtime-config.json');
+    this.runtimeConfigPath = path.resolve(process.cwd(), "data", "runtime-config.json");
+    this.legacyRuntimeConfigPath = path.resolve(process.cwd(), "runtime-config.json");
     
     // 初始化为默认配置
     this.config = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
@@ -553,6 +586,16 @@ class ConfigManager {
           system: loaded.system || {},
           providers: loaded.providers || {},
           keyPools: loaded.keyPools || {}
+        };
+      }
+
+      if (fs.existsSync(this.legacyRuntimeConfigPath)) {
+        const content = fs.readFileSync(this.legacyRuntimeConfigPath, "utf8");
+        const loaded = JSON.parse(content);
+        return {
+          system: loaded.system || {},
+          providers: loaded.providers || {},
+          keyPools: loaded.keyPools || {},
         };
       }
     } catch (e) {
@@ -600,6 +643,10 @@ class ConfigManager {
    */
   public saveRuntimeConfig() {
     try {
+      const runtimeDir = path.dirname(this.runtimeConfigPath);
+      if (!fs.existsSync(runtimeDir)) {
+        fs.mkdirSync(runtimeDir, { recursive: true });
+      }
       fs.writeFileSync(this.runtimeConfigPath, JSON.stringify(this.runtimeConfig, null, 2));
     } catch (e) {
       console.error("保存运行时配置失败", e);
@@ -882,4 +929,3 @@ export const reportKeyError = (provider: string, key: string, reason?: string) =
 export const reportKeySuccess = (provider: string, key: string) => configManager.reportKeySuccess(provider, key);
 
 export const IMAGE_BED_CONFIG = configManager.ImageBedConfig;
-

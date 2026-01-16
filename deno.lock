@@ -2,6 +2,7 @@
   "version": "5",
   "specifiers": {
     "jsr:@std/assert@*": "1.0.16",
+    "jsr:@std/assert@^1.0.6": "1.0.16",
     "jsr:@std/encoding@^1.0.5": "1.0.10",
     "jsr:@std/internal@^1.0.12": "1.0.12",
     "jsr:@std/yaml@*": "1.0.10",
@@ -26,6 +27,9 @@
     "@std/yaml@1.0.10": {
       "integrity": "245706ea3511cc50c8c6d00339c23ea2ffa27bd2c7ea5445338f8feff31fa58e"
     }
+  },
+  "redirects": {
+    "https://deno.land/std/async/delay.ts": "https://deno.land/std@0.224.0/async/delay.ts"
   },
   "remote": {
     "https://deno.land/std@0.208.0/assert/_constants.ts": "8a9da298c26750b28b326b297316cdde860bc237533b07e1337c021379e6b2a9",
@@ -62,6 +66,7 @@
     "https://deno.land/std@0.208.0/cli/parse_args.ts": "9bea02050b3f302e706871ff87ecfa3ad82cc34249adbe0dcddfaac75bdb48ff",
     "https://deno.land/std@0.208.0/flags/mod.ts": "567a34800a33e701942cb1726dd7e627a76e4681c33ce7346ac85cf90f691a8e",
     "https://deno.land/std@0.208.0/fmt/colors.ts": "34b3f77432925eb72cf0bfb351616949746768620b8e5ead66da532f93d10ba2",
+    "https://deno.land/std@0.208.0/testing/mock.ts": "3f23573411caf1eacd48d62c5f9a606970648a694ce55132c76b0d2365baa03d",
     "https://deno.land/std@0.208.0/yaml/_dumper/dumper.ts": "717403d0e700de783f2ef5c906b3d7245383e1509fc050e7ff5d4a53a03dbf40",
     "https://deno.land/std@0.208.0/yaml/_dumper/dumper_state.ts": "f0d0673ceea288334061ca34b63954c2bb5feb5bf6de5e4cfe9a942cdf6e5efe",
     "https://deno.land/std@0.208.0/yaml/_error.ts": "b59e2c76ce5a47b1b9fa0ff9f96c1dd92ea1e1b17ce4347ece5944a95c3c1a84",
@@ -195,6 +200,7 @@
     "https://deno.land/std@0.224.0/assert/mod.ts": "48b8cb8a619ea0b7958ad7ee9376500fe902284bb36f0e32c598c3dc34cbd6f3",
     "https://deno.land/std@0.224.0/assert/unimplemented.ts": "8c55a5793e9147b4f1ef68cd66496b7d5ba7a9e7ca30c6da070c1a58da723d73",
     "https://deno.land/std@0.224.0/assert/unreachable.ts": "5ae3dbf63ef988615b93eb08d395dda771c96546565f9e521ed86f6510c29e19",
+    "https://deno.land/std@0.224.0/async/delay.ts": "f90dd685b97c2f142b8069082993e437b1602b8e2561134827eeb7c12b95c499",
     "https://deno.land/std@0.224.0/fmt/colors.ts": "508563c0659dd7198ba4bbf87e97f654af3c34eb56ba790260f252ad8012e1c5",
     "https://deno.land/std@0.224.0/internal/diff.ts": "6234a4b493ebe65dc67a18a0eb97ef683626a1166a1906232ce186ae9f65f4e6",
     "https://deno.land/std@0.224.0/internal/format.ts": "0a98ee226fd3d43450245b1844b47003419d34d210fa989900861c79820d21c2",

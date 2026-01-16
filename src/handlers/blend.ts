@@ -1,25 +1,20 @@
 /**
- * Images Generations 端点处理器
+ * Images Blend 端点处理器
  *
- * 处理 /v1/images/generations 端点（文生图）。
+ * 处理 /v1/images/blend 端点（融合生图）。
  * 
  * 功能特性：
  * - **自动路由**：根据 Authorization Header 中的 API Key 自动路由到对应的 Provider。
  * - **双模式支持**：支持中转模式 (Relay) 和后端模式 (Backend)。
  * - **后端模式增强**：在后端模式下，支持自动从密钥池分配 Key，并具备错误重试机制。
  * - **格式兼容**：返回 OpenAI Images API 兼容的响应格式。
- *
- * 兼容策略：
- * - 如果请求 response_format="b64_json"：尽量返回 b64_json（必要时从 url 下载转 Base64）。
- * - 如果请求 response_format="url" 或未指定：优先返回 url；若只有 b64_json，则返回 data URI 作为 url（多数客户端可直接渲染）。
  */
 
 import { getSystemConfig, getNextAvailableKey, reportKeyError, reportKeySuccess } from "../config/manager.ts";
 import type { IProvider } from "../providers/base.ts";
 import type {
   ImageData,
-  ImageGenerationRequest,
-  ImagesRequest,
+  ImagesBlendRequest,
   ImagesResponse,
   GenerationResult,
 } from "../types/index.ts";
@@ -35,24 +30,12 @@ import {
 } from "../core/logger.ts";
 
 /**
- * 处理 /v1/images/generations 端点
- * 
- * 核心流程：
- * 1. **鉴权与路由**：根据 Key 格式判断是中转模式还是后端模式。
- * 2. **后端模式逻辑**：
- *    - 验证 Global Key。
- *    - 根据 Model 选择 Provider。
- *    - 从密钥池获取可用 Key。
- * 3. **请求校验**：检查参数有效性。
- * 4. **执行生成（带重试）**：
- *    - 后端模式下，如果遇到速率限制或鉴权错误，会自动换 Key 重试。
- *    - 中转模式不重试。
- * 5. **响应构建**：格式化输出，处理 `response_format` 转换。
+ * 处理 /v1/images/blend 端点
  *
  * @param req - HTTP 请求对象
  * @returns HTTP 响应对象
  */
-export async function handleImagesGenerations(req: Request): Promise<Response> {
+export async function handleImagesBlend(req: Request): Promise<Response> {
   const url = new URL(req.url);
   const requestId = generateRequestId();
   const systemConfig = getSystemConfig();
@@ -127,13 +110,7 @@ export async function handleImagesGenerations(req: Request): Promise<Response> {
   const startTime = Date.now();
 
   try {
-    const requestBody: ImagesRequest = await req.json();
-
-    // 调试日志：打印完整的请求体，排查参数丢失问题
-    debug(
-      "HTTP",
-      `收到生图请求 Body: ${JSON.stringify(requestBody, null, 2)}`
-    );
+    const requestBody: ImagesBlendRequest = await req.json();
 
     // 如果是后端模式，现在需要确定 Provider 和 Key
     if (usingBackendMode) {
@@ -162,50 +139,23 @@ export async function handleImagesGenerations(req: Request): Promise<Response> {
         throw new Error("内部错误: Provider 未定义");
     }
 
-    const prompt = requestBody.prompt || "";
     const desiredFormat = requestBody.response_format || "url";
 
     debug(
       "Router",
-      `Images API Prompt: ${prompt.substring(0, 80)}... (完整长度: ${prompt.length})`,
+      `Images Blend API Request: ${requestBody.model} (Messages: ${requestBody.messages?.length || 0})`,
     );
 
-    const {
-      prompt: _ignoredPrompt,
-      model: _ignoredModel,
-      size: _ignoredSize,
-      n: _ignoredN,
-      response_format: _ignoredResponseFormat,
-      stream: _ignoredStream,
-      ...extraParams
-    } = requestBody;
-
-    const generationRequest: ImageGenerationRequest = {
-      ...extraParams,
-      prompt,
-      images: [],
-      model: requestBody.model,
-      size: requestBody.size,
-      n: requestBody.n,
-      response_format: desiredFormat,
-      stream: requestBody.stream,
-    };
-
-    const validationError = provider.validateRequest(generationRequest);
-    if (validationError) {
-      warn("HTTP", `请求参数无效: ${validationError}`);
-      logRequestEnd(
-        requestId,
-        req.method,
-        url.pathname,
-        400,
-        Date.now() - startTime,
-        validationError,
-      );
-      return new Response(JSON.stringify({ error: validationError }), {
-        status: 400,
-        headers: { "Content-Type": "application/json" },
-      });
+    // 验证请求
+    // 注意：这里我们可能需要新的验证逻辑，目前简单检查 messages
+    if (!requestBody.messages || !Array.isArray(requestBody.messages) || requestBody.messages.length === 0) {
+         const msg = "必须提供 messages 参数";
+         warn("HTTP", `请求参数无效: ${msg}`);
+         logRequestEnd(requestId, req.method, url.pathname, 400, Date.now() - startTime, msg);
+         return new Response(JSON.stringify({ error: msg }), {
+             status: 400,
+             headers: { "Content-Type": "application/json" },
+         });
     }
 
     // 重试循环 (仅限后端模式)
@@ -238,63 +188,59 @@ export async function handleImagesGenerations(req: Request): Promise<Response> {
              info("Router", `后端模式: 为 ${provider.name} 分配了 Key (ID: ...${apiKey.slice(-4)}) (尝试 ${attempts}/${maxAttempts})`);
         }
 
-        const generationResult = await provider.generate(apiKey, generationRequest, { requestId });
+        try {
+            const generationResult = await provider.blend(apiKey, requestBody, { requestId });
         
-        if (generationResult.success) {
-            successResult = generationResult;
-            if (usingBackendMode) {
-                reportKeySuccess(provider.name, apiKey);
-            }
-            break; 
-        } else {
-            lastError = generationResult.error || "Unknown error";
-            
-            if (usingBackendMode) {
-                // 简单的关键词匹配，实际应根据 Provider 返回的错误码判断
-                const isRateLimit = lastError.includes("429") || lastError.includes("rate limit") || lastError.includes("速率限制");
-                const isAuthError = lastError.includes("401") || lastError.includes("403") || lastError.includes("API Key") || lastError.includes("Unauthorized");
-                
-                if (isRateLimit) {
-                    warn("Router", `Key ...${apiKey.slice(-4)} 触发速率限制，标记并重试...`);
-                    reportKeyError(provider.name, apiKey, 'rate_limit');
-                } else if (isAuthError) {
-                    warn("Router", `Key ...${apiKey.slice(-4)} 鉴权失败，标记并重试...`);
-                    reportKeyError(provider.name, apiKey, 'auth_error');
-                } else {
-                    // 其他错误也记录，避免坏节点一直被使用
-                    reportKeyError(provider.name, apiKey, 'other');
-                    // 如果不是 429/401，也许不应该重试？为了稳健性，如果是 5xx 也可以重试。
-                    // 这里我们继续重试，直到次数耗尽
+            if (generationResult.success) {
+                successResult = generationResult;
+                if (usingBackendMode) {
+                    reportKeySuccess(provider.name, apiKey);
                 }
+                break; 
             } else {
-                // 中转模式不重试
-                break;
+                lastError = generationResult.error || "Unknown error";
+                
+                if (usingBackendMode) {
+                    const errorMsg = lastError || "Unknown error";
+                    const isRateLimit = errorMsg.includes("429") || errorMsg.includes("rate limit") || errorMsg.includes("速率限制");
+                    const isAuthError = errorMsg.includes("401") || errorMsg.includes("403") || errorMsg.includes("API Key") || errorMsg.includes("Unauthorized");
+                    
+                    if (isRateLimit) {
+                        warn("Router", `Key ...${apiKey.slice(-4)} 触发速率限制，标记并重试...`);
+                        reportKeyError(provider.name, apiKey, 'rate_limit');
+                    } else if (isAuthError) {
+                        warn("Router", `Key ...${apiKey.slice(-4)} 鉴权失败，标记并重试...`);
+                        reportKeyError(provider.name, apiKey, 'auth_error');
+                    } else {
+                        reportKeyError(provider.name, apiKey, 'other');
+                    }
+                } else {
+                    break;
+                }
             }
+        } catch (e) {
+            lastError = e instanceof Error ? e.message : String(e);
+            if (!usingBackendMode) break;
         }
     }
 
     if (!successResult) {
-      throw new Error(lastError || "图片生成失败");
+      throw new Error(lastError || "图片融合生成失败");
     }
     
     const generationResult = successResult;
 
     // 处理流式响应
     if (generationResult.stream) {
-        logRequestEnd(
-            requestId,
-            req.method,
-            url.pathname,
-            200,
-            Date.now() - startTime,
-            "stream"
-        );
+        info("HTTP", "流式响应 (Images Blend API)");
+        logRequestEnd(requestId, req.method, url.pathname, 200, Date.now() - startTime);
         return new Response(generationResult.stream, {
             headers: {
                 "Content-Type": "text/event-stream",
                 "Cache-Control": "no-cache",
                 "Connection": "keep-alive",
-            }
+                "Access-Control-Allow-Origin": "*",
+            },
         });
     }
 
@@ -327,7 +273,7 @@ export async function handleImagesGenerations(req: Request): Promise<Response> {
         continue;
       }
       if (img.b64_json) {
-        // 兼容旧实现：将 Base64 作为 data URI 放入 url 字段，便于客户端直接渲染
+        // 兼容旧实现：将 Base64 作为 data URI 放入 url 字段
         data.push({ url: buildDataUri(img.b64_json, "image/png") });
         continue;
       }
@@ -338,7 +284,7 @@ export async function handleImagesGenerations(req: Request): Promise<Response> {
       data,
     };
 
-    info("HTTP", "响应完成 (Images API)");
+    info("HTTP", "响应完成 (Images Blend API)");
     logRequestEnd(requestId, req.method, url.pathname, 200, Date.now() - startTime);
 
     return new Response(JSON.stringify(responseBody), {

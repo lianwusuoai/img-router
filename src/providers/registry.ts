@@ -318,6 +318,18 @@ class ProviderRegistry {
     logProviderRouting("Unknown", apiKey.substring(0, 4));
     return undefined;
   }
+
+  isRecognizedApiKey(apiKey: string): boolean {
+    if (!apiKey) return false;
+
+    for (const reg of this.registrations.values()) {
+      if (reg.enabled && reg.instance.detectApiKey(apiKey)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
 }
 
 // 导出单例实例，确保全局共享同一份注册表

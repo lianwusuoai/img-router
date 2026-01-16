@@ -86,6 +86,8 @@ export interface ImagesRequest {
   size?: string;
   /** 响应格式 ("url" 或 "b64_json") */
   response_format?: "url" | "b64_json";
+  /** 是否流式输出 */
+  stream?: boolean;
   /** 允许其他任意扩展字段 */
   [key: string]: unknown;
 }
@@ -109,6 +111,8 @@ export interface ImagesEditRequest {
   size?: string;
   /** 响应格式 */
   response_format?: "url" | "b64_json";
+  /** 是否流式输出 */
+  stream?: boolean;
   /** 允许其他任意扩展字段 */
   [key: string]: unknown;
 }
@@ -184,10 +188,38 @@ export interface ImageGenerationRequest {
   images: string[];
   /** 模型名称 */
   model?: string;
-  /** 输出尺寸 */
-  size?: string;
   /** 生成数量 */
   n?: number;
+  /** 图片尺寸 */
+  size?: string;
   /** 响应格式 */
   response_format?: "url" | "b64_json";
+  /** 对话上下文（用于融合生图） */
+  messages?: Message[];
+  /** 是否流式输出 */
+  stream?: boolean;
+  /** 允许其他任意扩展字段 */
+  [key: string]: unknown;
+}
+
+/** 
+ * 融合生图请求格式 (自定义)
+ * 对应 POST /v1/images/blend
+ * 支持携带对话上下文和图片
+ */
+export interface ImagesBlendRequest {
+  /** 模型名称 */
+  model?: string;
+  /** 对话历史（包含文本和图片） */
+  messages: Message[];
+  /** 提示词（可选，如果 messages 中已包含） */
+  prompt?: string;
+  /** 生成数量 */
+  n?: number;
+  /** 图片尺寸 */
+  size?: string;
+  /** 响应格式 */
+  response_format?: "url" | "b64_json";
+  /** 允许其他任意扩展字段 */
+  [key: string]: unknown;
 }

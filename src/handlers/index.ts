@@ -11,3 +11,4 @@
 export { extractPromptAndImages, handleChatCompletions, normalizeMessageContent } from "./chat.ts";
 export { handleImagesGenerations } from "./images.ts";
 export { handleImagesEdits } from "./edits.ts";
+export { handleImagesBlend } from "./blend.ts";

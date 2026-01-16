@@ -544,7 +544,7 @@ input:checked + .slider:before {
 
 .channel-row {
     display: grid;
-    grid-template-columns: 100px 1fr 1fr 1fr;
+    grid-template-columns: 100px 1.5fr 1fr 0.8fr 0.8fr;
     gap: 8px;
     align-items: center;
 }

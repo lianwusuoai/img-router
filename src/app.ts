@@ -12,6 +12,7 @@
 import { handleChatCompletions } from "./handlers/chat.ts";
 import { handleImagesGenerations } from "./handlers/images.ts";
 import { handleImagesEdits } from "./handlers/edits.ts";
+import { handleImagesBlend } from "./handlers/blend.ts";
 import { warn, addLogStream, getRecentLogs, LogLevel, type LogEntry } from "./core/logger.ts";
 import { type RequestContext, withLogging } from "./middleware/logging.ts";
 import * as Config from "./config/manager.ts";
@@ -199,11 +200,15 @@ async function routeRequest(req: Request, ctx: RequestContext): Promise<Response
   // 统一鉴权
   // 排除不需要鉴权的路径：/health, /admin, /index, /ui, /css/*, /js/*, /
   // 仅对 OpenAI 兼容的 API 接口进行鉴权
-  if (pathname.startsWith("/v1/") && !checkAuth(req)) {
-    return new Response(JSON.stringify({ error: "Unauthorized" }), {
-      status: 401,
-      headers: { "Content-Type": "application/json" }
-    });
+  if (pathname.startsWith("/v1/")) {
+    const apiKey = req.headers.get("Authorization")?.replace("Bearer ", "").trim() || "";
+    // 如果既不是全局 Access Key，也不是已知的 Provider Key，则拒绝访问
+    if (!checkAuth(req) && !providerRegistry.isRecognizedApiKey(apiKey)) {
+      return new Response(JSON.stringify({ error: "Unauthorized" }), {
+        status: 401,
+        headers: { "Content-Type": "application/json" }
+      });
+    }
   }
 
   // 日志流 SSE 端点
@@ -291,6 +296,9 @@ async function routeRequest(req: Request, ctx: RequestContext): Promise<Response
     case "/v1/images/edits":
       if (method !== "POST") return handleMethodNotAllowed(method);
       return await handleImagesEdits(req);
+    case "/v1/images/blend":
+      if (method !== "POST") return handleMethodNotAllowed(method);
+      return await handleImagesBlend(req);
     
     // 管理 API：系统配置
     case "/api/config":
@@ -309,6 +317,9 @@ async function routeRequest(req: Request, ctx: RequestContext): Promise<Response
             defaultEditModel: p.config.defaultEditModel || p.config.defaultModel,
             defaultSize: p.config.defaultSize,
             defaultEditSize: p.config.defaultEditSize || p.config.defaultSize,
+            blendModels: p.config.blendModels || [],
+            defaultBlendModel: p.config.defaultBlendModel || p.config.defaultModel,
+            defaultBlendSize: p.config.defaultBlendSize || p.config.defaultSize,
             supportsQuality: p.name === "Pollinations",
           }];
         });
@@ -648,6 +659,7 @@ async function routeRequest(req: Request, ctx: RequestContext): Promise<Response
           model: ("model" in defaults ? defaults.model : undefined) as string | null | undefined,
           size: ("size" in defaults ? defaults.size : undefined) as string | null | undefined,
           quality: ("quality" in defaults ? defaults.quality : undefined) as string | null | undefined,
+          n: ("n" in defaults ? defaults.n : undefined) as number | null | undefined,
         });
 
         return new Response(JSON.stringify({ ok: true, runtimeConfig: getRuntimeConfig() }), {

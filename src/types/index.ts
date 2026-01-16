@@ -11,6 +11,7 @@ export type {
   ChatRequest,
   ImageData,
   ImageGenerationRequest,
+  ImagesBlendRequest,
   ImagesEditRequest,
   ImagesRequest,
   ImagesResponse,

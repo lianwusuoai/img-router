@@ -1,5 +1,5 @@
 {
-  "version": "v1.7.4",
+  "version": "v1.7.5",
   "imports": {
     "imagescript": "https://deno.land/x/imagescript@1.3.0/mod.ts",
     "@std/encoding": "jsr:@std/encoding@^1.0.5"
