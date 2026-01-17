@@ -144,7 +144,12 @@ function renderAllChannels(providers) {
 
     for (const provider of providers) {
         // 获取运行时配置中的默认值
-        const providerDefaults = (channelRuntimeConfig.providers || {})[provider.name] || {};
+        // 兼容大小写：尝试直接匹配或转小写匹配
+        let providerDefaults = (channelRuntimeConfig.providers || {})[provider.name];
+        if (!providerDefaults) {
+            providerDefaults = (channelRuntimeConfig.providers || {})[provider.name.toLowerCase()] || {};
+        }
+        
         const textDefaults = providerDefaults.text || {};
         const editDefaults = providerDefaults.edit || {};
         const blendDefaults = providerDefaults.blend || {};
@@ -155,7 +160,12 @@ function renderAllChannels(providers) {
         section.style.padding = '12px 16px';
         section.innerHTML = `
             <div class="form-header" style="display:flex; justify-content:space-between; align-items:center; padding-bottom: 8px; margin-bottom: 8px;">
-                <h3 class="card-title" style="font-size: 0.9rem;">${provider.name}</h3>
+                <h3 class="card-title" style="font-size: 0.9rem;">
+                    ${provider.name} 
+                    <span style="font-size: 0.7rem; color: #888; font-weight: normal; margin-left: 8px;">
+                        (Text: ${provider.textModels.length}, Edit: ${provider.editModels ? provider.editModels.length : 0})
+                    </span>
+                </h3>
                 <div style="display:flex; align-items:center; gap:10px;">
                     <label class="switch" style="transform: scale(0.8);">
                         <input type="checkbox" data-provider="${provider.name}" data-field="enabled" ${isEnabled ? 'checked' : ''}>
@@ -218,14 +228,14 @@ function renderAllChannels(providers) {
  */
 function buildModelSelect(provider, task, currentValue) {
     let baseModel = provider.defaultModel;
-    let models = provider.supportedModels;
+    let models = provider.textModels;
 
     if (task === 'edit') {
         baseModel = provider.defaultEditModel || provider.defaultModel;
-        models = (provider.editModels && provider.editModels.length > 0) ? provider.editModels : provider.supportedModels;
+        models = (provider.editModels && provider.editModels.length > 0) ? provider.editModels : provider.textModels;
     } else if (task === 'blend') {
         baseModel = provider.defaultBlendModel || provider.defaultModel;
-        models = (provider.blendModels && provider.blendModels.length > 0) ? provider.blendModels : provider.supportedModels;
+        models = (provider.blendModels && provider.blendModels.length > 0) ? provider.blendModels : provider.textModels;
     }
 
     let html = `<select class="form-control" data-provider="${provider.name}" data-task="${task}" data-field="model">`;
@@ -369,8 +379,18 @@ function buildQualitySelect(provider, currentValue, task) {
  */
 function buildCountSelect(provider, currentValue, task) {
     const baseCount = currentConfig.defaults?.imageCount || 1;
-    // 这里可以设定一个最大值，比如 4 或 10
-    const maxCount = 4;
+    
+    // 获取动态上限
+    let maxCount = 4;
+    if (provider.capabilities) {
+        if (task === 'text') {
+            maxCount = provider.capabilities.maxOutputImages || 4;
+        } else if (task === 'edit') {
+            maxCount = provider.capabilities.maxEditOutputImages || provider.capabilities.maxOutputImages || 4;
+        } else if (task === 'blend') {
+            maxCount = provider.capabilities.maxBlendOutputImages || provider.capabilities.maxOutputImages || 4;
+        }
+    }
     
     let html = `<select class="form-control" data-provider="${provider.name}" data-task="${task}" data-field="n">`;
     // html += `<option value="">跟随默认（${baseCount}）</option>`;
@@ -381,6 +401,10 @@ function buildCountSelect(provider, currentValue, task) {
         // currentValue 可能是数字或字符串，统一转字符串比较
         const selected = String(targetValue) === String(i) ? 'selected' : '';
         html += `<option value="${i}" ${selected}>${i} 张</option>`;
+    }
+    
+    if (maxCount === 1) {
+        html += `<option disabled value="">(Gitee 官方限制每次仅支持生成 1 张)</option>`;
     }
     
     html += '</select>';
@@ -489,8 +513,7 @@ async function saveChannelSettings() {
              const enabledInput = document.querySelector(`input[data-provider="${name}"][data-field="enabled"]`);
              const isEnabled = enabledInput ? enabledInput.checked : true;
              
-             // 收集 defaults (text/edit)
-             const defaults = { text: {}, edit: {} };
+             const defaults = {};
              
              document.querySelectorAll(`select[data-provider="${name}"]`).forEach(sel => {
                  const task = sel.dataset.task; // text or edit

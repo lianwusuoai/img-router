@@ -170,6 +170,9 @@ export class HuggingFaceProvider extends BaseProvider {
     multiImageFusion: true, // 支持多图融合
     asyncTask: true,        // 实际上是长连接等待，被视为异步
     maxInputImages: 3,      // 最多支持 3 张输入图片
+    maxOutputImages: 1,     // 最多支持生成 1 张图片
+    maxEditOutputImages: 1,
+    maxBlendOutputImages: 1,
     outputFormats: ["url", "b64_json"], // 支持 URL 和 Base64 输出
   };
 
@@ -178,7 +181,7 @@ export class HuggingFaceProvider extends BaseProvider {
    */
   readonly config: ProviderConfig = {
     apiUrl: HuggingFaceConfig.apiUrls[0] || "",
-    supportedModels: HuggingFaceConfig.supportedModels,
+    textModels: HuggingFaceConfig.textModels,
     defaultModel: HuggingFaceConfig.defaultModel,
     defaultSize: HuggingFaceConfig.defaultSize,
     editModels: HuggingFaceConfig.editModels,

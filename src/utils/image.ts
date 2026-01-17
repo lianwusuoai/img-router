@@ -186,6 +186,31 @@ export function extractMimeTypeFromDataUri(dataUri: string): string {
 }
 
 /**
+ * 将 Base64 字符串转换为 Blob 对象
+ * 适用于通过 FormData 直接上传文件
+ * 
+ * @param base64 Base64 字符串（支持 Data URI 格式）
+ * @param defaultMime 默认 MIME 类型
+ */
+export function base64ToBlob(base64: string, defaultMime: string = "image/png"): Blob {
+  let base64Content = base64;
+  let mimeType = defaultMime;
+
+  if (base64.startsWith("data:")) {
+    mimeType = extractMimeTypeFromDataUri(base64);
+    base64Content = extractBase64FromDataUri(base64);
+  }
+
+  const binaryString = atob(base64Content);
+  const bytes = new Uint8Array(binaryString.length);
+  for (let i = 0; i < binaryString.length; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+
+  return new Blob([bytes], { type: mimeType });
+}
+
+/**
  * 构建 Data URI
  * @param base64 Base64 字符串
  * @param mimeType MIME 类型

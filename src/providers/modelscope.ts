@@ -54,6 +54,9 @@ export class ModelScopeProvider extends BaseProvider {
     multiImageFusion: true, // 支持多图融合
     asyncTask: true,        // 必须使用异步轮询
     maxInputImages: 10,     // 支持较多输入图片
+    maxOutputImages: 4,     // 文生图上限
+    maxEditOutputImages: 4, // 图生图上限
+    maxBlendOutputImages: 4, // 融合上限
     outputFormats: ["url", "b64_json"], // 支持 URL 和 Base64 输出
   };
 
@@ -62,7 +65,7 @@ export class ModelScopeProvider extends BaseProvider {
    */
   readonly config: ProviderConfig = {
     apiUrl: ModelScopeConfig.apiUrl,
-    supportedModels: ModelScopeConfig.supportedModels,
+    textModels: ModelScopeConfig.textModels,
     defaultModel: ModelScopeConfig.defaultModel,
     defaultSize: ModelScopeConfig.defaultSize,
     editModels: ModelScopeConfig.editModels,

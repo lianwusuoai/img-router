@@ -190,12 +190,12 @@ export const GiteeConfig = {
 
 ### 增删支持的模型
 
-修改 `supportedModels`、`editModels` 等数组：
+修改 `textModels`、`editModels` 等数组：
 
 ```typescript
 // 火山引擎 - 添加/删除支持的模型
 export const Doubao SeedreamConfig = {
-  supportedModels: [
+  textModels: [
     "doubao-seedream-4-5-251128",
     "doubao-seedream-4-0-250828",
     "your-new-model-id", // ← 添加新模型

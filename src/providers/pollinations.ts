@@ -158,6 +158,9 @@ export class PollinationsProvider extends BaseProvider {
     multiImageFusion: true, // 支持多图融合（通过拼接 URL）
     asyncTask: false,       // 同步返回结果
     maxInputImages: 3,      // 限制输入图片数量
+    maxOutputImages: 1,     // 文生图上限
+    maxEditOutputImages: 1, // 图生图上限
+    maxBlendOutputImages: 1, // 融合上限
     outputFormats: ["b64_json"], // 仅支持 Base64 输出（因为接口直接返回图片流）
   };
 
@@ -166,7 +169,7 @@ export class PollinationsProvider extends BaseProvider {
    */
   readonly config: ProviderConfig = {
     apiUrl: PollinationsConfig.apiUrl,
-    supportedModels: PollinationsConfig.supportedModels,
+    textModels: PollinationsConfig.textModels,
     defaultModel: PollinationsConfig.defaultModel,
     defaultSize: PollinationsConfig.defaultSize,
     editModels: PollinationsConfig.editModels,

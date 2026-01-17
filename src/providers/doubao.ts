@@ -49,7 +49,10 @@ export class DoubaoProvider extends BaseProvider {
     imageToImage: true,     // 支持图生图
     multiImageFusion: true, // 支持多图融合
     asyncTask: false,       // 仅支持同步任务
-    maxInputImages: 3,      // 最多支持 3 张参考图
+    maxInputImages: 14,     // 最多支持 14 张参考图
+    maxOutputImages: 15,    // 文生图上限 15 张
+    maxEditOutputImages: 14, // 图生图上限 14 张
+    maxBlendOutputImages: 13, // 融合生图上限 13 张
     outputFormats: ["url", "b64_json"], // 支持 URL 和 Base64 输出
   };
 
@@ -59,10 +62,10 @@ export class DoubaoProvider extends BaseProvider {
    */
   readonly config: ProviderConfig = {
     apiUrl: DoubaoConfig.apiUrl,
-    supportedModels: DoubaoConfig.supportedModels,
+    textModels: DoubaoConfig.textModels,
     defaultModel: DoubaoConfig.defaultModel,
     defaultSize: DoubaoConfig.defaultSize,
-    editModels: DoubaoConfig.supportedModels, // 豆包的模型通常通用，图生图也用相同列表
+    editModels: DoubaoConfig.textModels, // 豆包的模型通常通用，图生图也用相同列表
     defaultEditModel: DoubaoConfig.defaultModel,
     defaultEditSize: DoubaoConfig.defaultEditSize,
   };
@@ -89,6 +92,14 @@ export class DoubaoProvider extends BaseProvider {
 
     const sizeError = this.validateModelPixelSize(model, size);
     if (sizeError) return sizeError;
+
+    // 总和校验逻辑：输入图片数量 + 期望生成张数 (n) <= 15
+    const requestCount = typeof request.n === "number" ? request.n : Number(request.n || 1);
+    const finalCount = Number.isFinite(requestCount) && requestCount > 0 ? Math.floor(requestCount) : 1;
+    
+    if (request.images.length + finalCount > 15) {
+      return "总计上限 (输入+输出)超过15张图，生图失败";
+    }
 
     return null;
   }

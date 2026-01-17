@@ -307,11 +307,21 @@ async function routeRequest(req: Request, ctx: RequestContext): Promise<Response
           const p = providerRegistry.get(name, true);
           if (!p) return [];
           const isEnabled = providerRegistry.has(name);
+
+          if (name === "Gitee") {
+            console.log("[API/Config] Gitee Config Snapshot:", JSON.stringify({
+              textModelsCount: p.config.textModels?.length,
+              editModelsCount: p.config.editModels?.length,
+              blendModelsCount: p.config.blendModels?.length,
+              firstTextModel: p.config.textModels?.[0]
+            }));
+          }
+
           return [{
             name: p.name,
             enabled: isEnabled,
             capabilities: p.capabilities,
-            supportedModels: p.config.supportedModels,
+            textModels: p.config.textModels,
             editModels: p.config.editModels || [],
             defaultModel: p.config.defaultModel,
             defaultEditModel: p.config.defaultEditModel || p.config.defaultModel,
@@ -326,7 +336,7 @@ async function routeRequest(req: Request, ctx: RequestContext): Promise<Response
 
         return new Response(JSON.stringify({
           version: denoConfig.version,
-          supportedModels: Config.ALL_SUPPORTED_MODELS,
+          textModels: Config.ALL_TEXT_MODELS,
           supportedSizes: Config.SUPPORTED_SIZES,
           providers,
           runtimeConfig: getRuntimeConfig(),
@@ -585,12 +595,25 @@ async function routeRequest(req: Request, ctx: RequestContext): Promise<Response
 
               const pVal = value as Partial<RuntimeProviderConfig>;
               const currentP: RuntimeProviderConfig = nextConfig.providers[key] || {};
+              const cleanedCurrent: RuntimeProviderConfig = {
+                enabled: currentP.enabled,
+                text: currentP.text,
+                edit: currentP.edit,
+                blend: currentP.blend,
+              };
+              const cleanedPatch: RuntimeProviderConfig = {
+                enabled: pVal.enabled,
+                text: pVal.text,
+                edit: pVal.edit,
+                blend: pVal.blend,
+              };
 
               nextConfig.providers[key] = {
-                ...currentP,
-                ...pVal,
-                text: { ...currentP.text, ...(pVal.text || {}) },
-                edit: { ...currentP.edit, ...(pVal.edit || {}) },
+                ...cleanedCurrent,
+                ...cleanedPatch,
+                text: { ...(cleanedCurrent.text || {}), ...(cleanedPatch.text || {}) },
+                edit: { ...(cleanedCurrent.edit || {}), ...(cleanedPatch.edit || {}) },
+                blend: { ...(cleanedCurrent.blend || {}), ...(cleanedPatch.blend || {}) },
               };
             }
 
@@ -648,7 +671,7 @@ async function routeRequest(req: Request, ctx: RequestContext): Promise<Response
           }
         }
 
-        if ((task !== "text" && task !== "edit") || !defaults || typeof defaults !== "object") {
+        if ((task !== "text" && task !== "edit" && task !== "blend") || !defaults || typeof defaults !== "object") {
           return new Response(JSON.stringify({ error: "Invalid payload" }), {
             status: 400,
             headers: { "Content-Type": "application/json" },

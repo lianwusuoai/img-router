@@ -82,7 +82,7 @@ export interface BaseProviderConfig {
   /** 默认融合生图数量（可选） */
   defaultBlendCount?: number;
   /** 支持的模型列表 */
-  supportedModels: string[];
+  textModels: string[];
 }
 
 /**
@@ -97,6 +97,7 @@ export interface DoubaoConfig extends BaseProviderConfig {
  * Gitee AI 提供商配置
  */
 export interface GiteeConfig extends BaseProviderConfig {
+  asyncApiUrl: string;
   /** 图片编辑 API 地址 */
   editApiUrl: string;
   /** 异步图片编辑 API 地址 */
@@ -111,6 +112,7 @@ export interface GiteeConfig extends BaseProviderConfig {
   defaultEditSize: string;
   /** 默认异步编辑尺寸 */
   defaultAsyncEditSize: string;
+  asyncTextModels: string[];
   /** 支持的编辑模型列表 */
   editModels: string[];
   /** 支持的异步编辑模型列表 */
@@ -148,7 +150,7 @@ export interface HuggingFaceConfig {
   /** 默认编辑尺寸 */
   defaultEditSize: string;
   /** 支持的生成模型列表 */
-  supportedModels: string[];
+  textModels: string[];
   /** 支持的编辑模型列表 */
   editModels: string[];
 }
@@ -407,7 +409,7 @@ const DEFAULT_CONFIG: AppConfig = {
       defaultSize: "2048x2048",
       defaultCount: Number(process.env.DOUBAO_DEFAULT_COUNT) || 1, // 优先读取环境变量，默认为 1
       defaultEditSize: "2048x2048",
-      supportedModels: [
+      textModels: [
         "doubao-seedream-4-5-251128",
         "doubao-seedream-4-0-250828"
       ]
@@ -415,6 +417,7 @@ const DEFAULT_CONFIG: AppConfig = {
     gitee: {
       enabled: true,
       apiUrl: "https://ai.gitee.com/v1/images/generations",
+      asyncApiUrl: "https://ai.gitee.com/v1/async/images/generations",
       editApiUrl: "https://ai.gitee.com/v1/images/edits",
       asyncEditApiUrl: "https://ai.gitee.com/v1/async/images/edits",
       taskStatusUrl: "https://ai.gitee.com/v1/task",
@@ -424,8 +427,29 @@ const DEFAULT_CONFIG: AppConfig = {
       defaultSize: "2048x2048",
       defaultEditSize: "1024x1024",
       defaultAsyncEditSize: "2048x2048",
-      supportedModels: [
-        "z-image-turbo"
+      textModels: [
+        "FLUX.1-dev",
+        "Kolors",
+        "z-image-turbo",
+        "stable-diffusion-3.5-large-turbo",
+        "LongCat-Image",
+        "flux-1-schnell",
+        "Qwen-Image-2512",
+        "stable-diffusion-xl-base-1.0",
+        "Qwen-Image",
+        "HiDream-I1-Full",
+        "FLUX.2-dev",
+        "HunyuanDiT-v1.2-Diffusers-Distilled",
+        "CogView4_6B",
+        "stable-diffusion-3-medium",
+        "FLUX_1-Krea-dev"
+      ],
+      asyncTextModels: [
+        "FLUX.1-dev",
+        "LongCat-Image",
+        "flux-1-schnell",
+        "Qwen-Image-2512",
+        "Qwen-Image"
       ],
       editModels: [
         "Qwen-Image-Edit",
@@ -454,7 +478,7 @@ const DEFAULT_CONFIG: AppConfig = {
       defaultEditModel: "Qwen/Qwen-Image-Edit",
       defaultSize: "1024x1024",
       defaultEditSize: "1024x1024",
-      supportedModels: [
+      textModels: [
         "Tongyi-MAI/Z-Image-Turbo"
       ],
       editModels: [
@@ -479,7 +503,7 @@ const DEFAULT_CONFIG: AppConfig = {
       defaultEditModel: "Qwen-Image-Edit-2511",
       defaultSize: "1024x1024",
       defaultEditSize: "1024x1024",
-      supportedModels: [
+      textModels: [
         "z-image-turbo"
       ],
       editModels: [
@@ -494,7 +518,7 @@ const DEFAULT_CONFIG: AppConfig = {
       defaultEditModel: "nanobanana-pro",
       defaultSize: "1024x1024",
       defaultEditSize: "1024x1024",
-      supportedModels: [
+      textModels: [
         "flux", "turbo", "zimage", "kontext", "nanobanana", "nanobanana-pro",
         "seedream", "seedream-pro", "gptimage", "gptimage-large", "veo",
         "seedance", "seedance-pro"
@@ -536,12 +560,12 @@ const DEFAULT_CONFIG: AppConfig = {
   }
 };
 
-export const DOUBAO_MODELS = DEFAULT_CONFIG.providers.doubao.supportedModels;
-export const GITEE_MODELS = DEFAULT_CONFIG.providers.gitee.supportedModels;
-export const MODELSCOPE_MODELS = DEFAULT_CONFIG.providers.modelscope.supportedModels;
-export const HUGGINGFACE_MODELS = DEFAULT_CONFIG.providers.huggingface.supportedModels;
-export const POLLINATIONS_MODELS = DEFAULT_CONFIG.providers.pollinations.supportedModels;
-export const ALL_SUPPORTED_MODELS = [
+export const DOUBAO_MODELS = DEFAULT_CONFIG.providers.doubao.textModels;
+export const GITEE_MODELS = DEFAULT_CONFIG.providers.gitee.textModels;
+export const MODELSCOPE_MODELS = DEFAULT_CONFIG.providers.modelscope.textModels;
+export const HUGGINGFACE_MODELS = DEFAULT_CONFIG.providers.huggingface.textModels;
+export const POLLINATIONS_MODELS = DEFAULT_CONFIG.providers.pollinations.textModels;
+export const ALL_TEXT_MODELS = [
   ...DOUBAO_MODELS,
   ...GITEE_MODELS,
   ...MODELSCOPE_MODELS,
@@ -566,9 +590,85 @@ class ConfigManager {
     // 初始化为默认配置
     this.config = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
     this.runtimeConfig = this.loadRuntimeConfig();
+
+    const { config: sanitized, changed } = this.sanitizeRuntimeConfig(this.runtimeConfig);
+    if (changed) {
+      this.runtimeConfig = sanitized;
+      this.saveRuntimeConfig();
+    }
     
     // 将运行时配置合并到应用配置中
     this.applyRuntimeOverrides();
+  }
+
+  private sanitizeRuntimeConfig(config: RuntimeConfig): { config: RuntimeConfig; changed: boolean } {
+    let changed = false;
+    const providers: Record<string, RuntimeProviderConfig> = {};
+
+    for (const [name, raw] of Object.entries(config.providers || {})) {
+      if (!raw || typeof raw !== "object") {
+        changed = true;
+        continue;
+      }
+
+      const r = raw as Record<string, unknown>;
+      const next: RuntimeProviderConfig = {};
+
+      if (typeof r.enabled === "boolean") {
+        next.enabled = r.enabled;
+      } else if ("enabled" in r) {
+        changed = true;
+      }
+
+      const sanitizeDefaults = (val: unknown): ProviderTaskDefaults | undefined => {
+        if (!val || typeof val !== "object") return undefined;
+        const v = val as Record<string, unknown>;
+        const out: ProviderTaskDefaults = {};
+
+        if (typeof v.model === "string" || v.model === null) out.model = v.model as string | null;
+        if (typeof v.size === "string" || v.size === null) out.size = v.size as string | null;
+        if (typeof v.quality === "string" || v.quality === null) out.quality = v.quality as string | null;
+        if (typeof v.n === "number" || v.n === null) out.n = v.n as number | null;
+
+        const allowedKeys = new Set(["model", "size", "quality", "n"]);
+        for (const k of Object.keys(v)) {
+          if (!allowedKeys.has(k)) {
+            changed = true;
+            break;
+          }
+        }
+
+        return out;
+      };
+
+      const text = sanitizeDefaults(r.text);
+      if (text) next.text = text;
+
+      const edit = sanitizeDefaults(r.edit);
+      if (edit) next.edit = edit;
+
+      const blend = sanitizeDefaults(r.blend);
+      if (blend) next.blend = blend;
+
+      const allowedProviderKeys = new Set(["enabled", "text", "edit", "blend"]);
+      for (const k of Object.keys(r)) {
+        if (!allowedProviderKeys.has(k)) {
+          changed = true;
+          break;
+        }
+      }
+
+      providers[name] = next;
+    }
+
+    return {
+      changed,
+      config: {
+        system: config.system || {},
+        providers,
+        keyPools: config.keyPools || {},
+      },
+    };
   }
 
   /**
@@ -743,10 +843,10 @@ class ConfigManager {
   public getProviderTaskDefaults(provider: string, task?: string): ProviderTaskDefaults {
     const config = this.runtimeConfig.providers[provider];
     if (!config) return {};
-    if (task === 'text' || task === 'edit') {
-        return config[task] || {};
+    if (task === "text" || task === "edit" || task === "blend") {
+      return config[task] || {};
     }
-    return config.text || {}; // 如果未指定任务或任务未知，默认为 text
+    return config.text || {};
   }
 
   /**
@@ -759,8 +859,8 @@ class ConfigManager {
     if (!this.runtimeConfig.providers[provider]) {
       this.runtimeConfig.providers[provider] = {};
     }
-    if (task === 'text' || task === 'edit') {
-        this.runtimeConfig.providers[provider][task] = defaults;
+    if (task === "text" || task === "edit" || task === "blend") {
+      this.runtimeConfig.providers[provider][task] = defaults;
     }
     this.saveRuntimeConfig();
   }
@@ -866,7 +966,7 @@ class ConfigManager {
   public getProviderForModel(model: string): string | null {
     for (const [provider, conf] of Object.entries(this.config.providers)) {
       // deno-lint-ignore no-explicit-any
-      if ((conf as any).supportedModels?.includes(model)) return provider;
+      if ((conf as any).textModels?.includes(model)) return provider;
     }
     return null;
   }

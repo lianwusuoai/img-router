@@ -35,6 +35,12 @@ export interface ProviderCapabilities {
   asyncTask: boolean;
   /** 最大支持的输入图片数量 */
   maxInputImages: number;
+  /** 最大支持的输出图片数量 (文生图 n 参数) */
+  maxOutputImages: number;
+  /** 最大支持的图片编辑输出数量 (图生图 n 参数) */
+  maxEditOutputImages: number;
+  /** 最大支持的融合生图输出数量 (融合 n 参数) */
+  maxBlendOutputImages: number;
   /** 支持的输出格式 ("url" 或 "b64_json") */
   outputFormats: ("url" | "b64_json")[];
 }
@@ -47,7 +53,7 @@ export interface ProviderConfig {
   /** API 基础 URL */
   apiUrl: string;
   /** 支持的文生图模型列表 */
-  supportedModels: string[];
+  textModels: string[];
   /** 默认文生图模型 */
   defaultModel: string;
   /** 默认生成尺寸 */
@@ -182,10 +188,10 @@ export abstract class BaseProvider implements IProvider {
 
   /**
    * 获取支持的模型列表
-   * 默认实现：合并 supportedModels 和 editModels 并去重
+   * 默认实现：合并 textModels 和 editModels 并去重
    */
   getSupportedModels(): string[] {
-    const models = [...this.config.supportedModels];
+    const models = [...this.config.textModels];
     if (this.config.editModels) {
       models.push(...this.config.editModels);
     }
@@ -261,7 +267,7 @@ export abstract class BaseProvider implements IProvider {
           return requestModel;
         }
       } else {
-        const textList = this.config.supportedModels || [];
+        const textList = this.config.textModels || [];
         if (textList.includes(requestModel)) {
           return requestModel;
         }
