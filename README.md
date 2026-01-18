@@ -401,6 +401,9 @@ export const API_TIMEOUT_MS = 300000;
 | `seedream-pro`   | 文生图/图生图 | ByteDance Seedream 4.5 (4K)           |
 | `gptimage`       | 文生图/图生图 | GPT Image Mini                        |
 | `gptimage-large` | 文生图/图生图 | GPT Image 1.5 高级版                  |
+| `veo`            | 文生视频      | Google Veo (4/6/8 秒)                 |
+| `seedance`       | 文生视频      | BytePlus Seedance (高质量)            |
+| `seedance-pro`   | 文生视频      | BytePlus Seedance Pro (精准控制)      |
 
 > **Pollinations 密钥说明：**
 >

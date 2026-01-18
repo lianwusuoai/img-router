@@ -53,6 +53,16 @@ const MODELSCOPE_SIZES_EDIT = [
   "1024x1024",
 ];
 
+const POLLINATIONS_SIZES = [
+  "1024x1024",
+  "768x1024",
+  "1024x768",
+  "720x1280",
+  "1280x720",
+  "512x512",
+  "256x256",
+];
+
 function parsePixelSize(size) {
   const m = String(size || "").match(/^(\d+)x(\d+)$/);
   if (!m) return null;
@@ -346,6 +356,7 @@ function buildSizeSelect(provider, task, currentValue, currentModel) {
 
   const isDoubao = provider.name === "Doubao";
   const isModelScope = provider.name === "ModelScope";
+  const isPollinations = provider.name === "Pollinations";
   let sizes = channelSupportedSizes && channelSupportedSizes.length > 0
     ? channelSupportedSizes
     : ["1024x1024", "1024x768", "768x1024", "1280x720"];
@@ -379,6 +390,8 @@ function buildSizeSelect(provider, task, currentValue, currentModel) {
       // 默认为 Z-Image-Turbo 或其他模型，使用 TEXT 尺寸列表
       sizes = [...MODELSCOPE_SIZES_TEXT];
     }
+  } else if (isPollinations) {
+    sizes = [...POLLINATIONS_SIZES];
   }
 
   let html =
@@ -402,7 +415,7 @@ function buildSizeSelect(provider, task, currentValue, currentModel) {
       selected = "selected";
       hasSelection = true;
     }
-    const label = (isDoubao || isModelScope) ? formatSizeWithRatio(s) : s;
+    const label = (isDoubao || isModelScope || isPollinations) ? formatSizeWithRatio(s) : s;
     html += `<option value="${s}" ${selected}>${label}</option>`;
   }
 

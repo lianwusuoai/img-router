@@ -216,18 +216,33 @@ export class HuggingFaceProvider extends BaseProvider {
     logFullPrompt("HuggingFace", requestId, prompt);
     if (hasImages) logInputImages("HuggingFace", requestId, images);
 
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-      "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    };
-    if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
+    // 1. 确定最终的生成数量 n
+    // HuggingFace 支持通过并发实现多图生成
+    const n = this.selectCount(request.n, hasImages);
+    const requestWithCount = { ...request, n };
 
-    if (hasImages) {
-      return await this.generateImageToImage(apiKey, request, options, startTime, headers);
-    } else {
-      return await this.generateTextToImage(request, options, startTime, headers);
-    }
+    // 2. 使用 BaseProvider 的并发生成策略
+    return await this.generateWithConcurrency(
+      apiKey,
+      requestWithCount,
+      options,
+      async (singleRequest) => {
+        const taskStartTime = Date.now();
+        
+        const headers: Record<string, string> = {
+          "Content-Type": "application/json",
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        };
+        if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
+
+        if (hasImages) {
+          return await this.generateImageToImage(apiKey, singleRequest, options, taskStartTime, headers);
+        } else {
+          return await this.generateTextToImage(singleRequest, options, taskStartTime, headers);
+        }
+      }
+    );
   }
 
   /**

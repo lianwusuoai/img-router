@@ -16,7 +16,15 @@ import {
   type ProviderCapabilities,
   type ProviderConfig,
 } from "./base.ts";
-import type { GenerationResult, ImageData, ImageGenerationRequest } from "../types/index.ts";
+import type {
+  GenerationResult,
+  ImageData,
+  ImageGenerationRequest,
+  ImagesBlendRequest,
+  Message,
+  MessageContentItem,
+  NonStandardImageContentItem,
+} from "../types/index.ts";
 import {
   API_TIMEOUT_MS,
   IMAGE_BED_CONFIG as ImageBedConfig,
@@ -161,10 +169,11 @@ export class PollinationsProvider extends BaseProvider {
     imageToImage: true, // 支持图生图
     multiImageFusion: true, // 支持多图融合（通过拼接 URL）
     asyncTask: false, // 同步返回结果
-    maxInputImages: 3, // 限制输入图片数量
-    maxOutputImages: 1, // 文生图上限
-    maxEditOutputImages: 1, // 图生图上限
-    maxBlendOutputImages: 1, // 融合上限
+    maxInputImages: 5, // 限制输入图片数量
+    maxOutputImages: 16, // 文生图上限 (支持并发)
+    maxNativeOutputImages: 1, // 原生 API 限制
+    maxEditOutputImages: 16, // 图生图上限
+    maxBlendOutputImages: 16, // 融合上限
     outputFormats: ["b64_json"], // 仅支持 Base64 输出（因为接口直接返回图片流）
   };
 
@@ -179,6 +188,9 @@ export class PollinationsProvider extends BaseProvider {
     editModels: PollinationsConfig.editModels,
     defaultEditModel: PollinationsConfig.defaultEditModel,
     defaultEditSize: PollinationsConfig.defaultEditSize,
+    blendModels: PollinationsConfig.blendModels,
+    defaultBlendModel: PollinationsConfig.defaultBlendModel,
+    defaultBlendSize: PollinationsConfig.defaultBlendSize,
   };
 
   /**
@@ -197,62 +209,157 @@ export class PollinationsProvider extends BaseProvider {
     request: ImageGenerationRequest,
     options: GenerationOptions,
   ): Promise<GenerationResult> {
-    const startTime = Date.now();
     const hasImages = request.images.length > 0;
 
-    logFullPrompt("Pollinations", options.requestId, request.prompt);
+    // 确定生成数量 n
+    const n = this.selectCount(request.n, hasImages);
+    const requestWithCount = { ...request, n };
 
-    if (hasImages) {
-      logInputImages("Pollinations", options.requestId, request.images);
+    return await this.generateWithConcurrency(
+      apiKey,
+      requestWithCount,
+      options,
+      async (singleRequest) => {
+        const startTime = Date.now();
+        const normalizedRequest = { ...singleRequest };
+
+        logFullPrompt("Pollinations", options.requestId, normalizedRequest.prompt);
+
+        if (hasImages) {
+          logInputImages("Pollinations", options.requestId, normalizedRequest.images);
+        }
+
+        const model = this.selectModel(normalizedRequest.model, hasImages);
+        const size = this.selectSize(normalizedRequest.size, hasImages);
+        logImageGenerationStart(
+          "Pollinations",
+          options.requestId,
+          model,
+          size,
+          normalizedRequest.prompt.length,
+        );
+
+        try {
+          let base64Data: string;
+
+          if (hasImages) {
+            base64Data = await this.imageEdit(
+              apiKey,
+              normalizedRequest.prompt,
+              normalizedRequest.images,
+              model,
+              size,
+            );
+          } else {
+            base64Data = await this.textToImage(apiKey, normalizedRequest.prompt, model, size);
+          }
+
+          const duration = Date.now() - startTime;
+          // 从 data URI 中提取纯 Base64
+          let pureBase64 = base64Data;
+          if (base64Data.startsWith("data:")) {
+            pureBase64 = base64Data.split(",")[1];
+          }
+
+          const imageData: ImageData = {
+            b64_json: pureBase64,
+          };
+
+          logGeneratedImages("Pollinations", options.requestId, [{
+            b64_json: pureBase64.substring(0, 100) + "...",
+          }]);
+          logImageGenerationComplete("Pollinations", options.requestId, 1, duration);
+
+          return {
+            success: true,
+            images: [imageData],
+            model,
+            provider: this.name,
+            duration,
+          };
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          const duration = Date.now() - startTime;
+          logImageGenerationFailed("Pollinations", options.requestId, msg);
+          return {
+            success: false,
+            error: msg,
+            provider: this.name,
+            duration,
+          };
+        }
+      },
+    );
+  }
+
+  /**
+   * 融合生图 (Blend) 实现
+   *
+   * 逻辑：提取 Messages 中的所有图片和 Prompt，转换为标准 ImageGenerationRequest，
+   * 然后复用 generate 方法。
+   */
+  override blend(
+    apiKey: string,
+    request: ImagesBlendRequest,
+    options: GenerationOptions,
+  ): Promise<GenerationResult> {
+    const { prompt, images } = this.extractPromptAndImagesFromMessages(request.messages);
+    const finalPrompt = request.prompt || prompt || "";
+
+    return this.generate(apiKey, {
+      prompt: finalPrompt,
+      images,
+      model: request.model,
+      n: request.n,
+      size: request.size,
+      response_format: "b64_json",
+    }, options);
+  }
+
+  /**
+   * 从消息列表中提取 Prompt 和图片
+   */
+  private extractPromptAndImagesFromMessages(
+    messages: Message[],
+  ): { prompt: string; images: string[] } {
+    const images: string[] = [];
+
+    for (const msg of messages) {
+      if (!Array.isArray(msg.content)) continue;
+      for (const item of msg.content) {
+        if (item.type === "image_url" && item.image_url?.url) {
+          images.push(item.image_url.url);
+        }
+        if (item.type === "image") {
+          const nonStandard = item as NonStandardImageContentItem;
+          const mediaType = nonStandard.mediaType || "image/png";
+          const base64Str = nonStandard.image;
+          images.push(
+            base64Str.startsWith("data:") ? base64Str : `data:${mediaType};base64,${base64Str}`,
+          );
+        }
+      }
     }
 
-    const model = this.selectModel(request.model, hasImages);
-    const size = this.selectSize(request.size, hasImages);
-    logImageGenerationStart("Pollinations", options.requestId, model, size, request.prompt.length);
+    const prompt = this.extractPromptFromLastUserMessage(messages);
+    return { prompt, images };
+  }
 
-    try {
-      let base64Data: string;
+  private extractPromptFromLastUserMessage(messages: Message[]): string {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      if (!msg || msg.role !== "user") continue;
 
-      if (hasImages) {
-        base64Data = await this.imageEdit(apiKey, request.prompt, request.images, model, size);
-      } else {
-        base64Data = await this.textToImage(apiKey, request.prompt, model, size);
+      if (typeof msg.content === "string") return msg.content.trim();
+      if (Array.isArray(msg.content)) {
+        const parts: string[] = [];
+        for (const item of msg.content as MessageContentItem[]) {
+          if (item.type === "text") parts.push(item.text);
+        }
+        return parts.join(" ").trim();
       }
-
-      const duration = Date.now() - startTime;
-      // 从 data URI 中提取纯 Base64
-      let pureBase64 = base64Data;
-      if (base64Data.startsWith("data:")) {
-        pureBase64 = base64Data.split(",")[1];
-      }
-
-      const imageData: ImageData = {
-        b64_json: pureBase64,
-      };
-
-      logGeneratedImages("Pollinations", options.requestId, [{
-        b64_json: pureBase64.substring(0, 100) + "...",
-      }]);
-      logImageGenerationComplete("Pollinations", options.requestId, 1, duration);
-
-      return {
-        success: true,
-        images: [imageData],
-        model,
-        provider: this.name,
-        duration,
-      };
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      const duration = Date.now() - startTime;
-      logImageGenerationFailed("Pollinations", options.requestId, msg);
-      return {
-        success: false,
-        error: msg,
-        provider: this.name,
-        duration,
-      };
     }
+    return "";
   }
 
   /**
@@ -277,7 +384,9 @@ export class PollinationsProvider extends BaseProvider {
       height: String(height),
     });
 
-    if (PollinationsConfig.seed !== undefined) params.set("seed", String(PollinationsConfig.seed));
+    if (PollinationsConfig.seed !== undefined && PollinationsConfig.seed !== -1) {
+      params.set("seed", String(PollinationsConfig.seed));
+    }
     const q = getProviderTaskDefaults(this.name, "text").quality ?? PollinationsConfig.quality;
     if (q !== undefined) {
       params.set("quality", String(q));
@@ -401,7 +510,13 @@ export class PollinationsProvider extends BaseProvider {
       image: imageParam,
     });
 
-    if (PollinationsConfig.seed !== undefined) params.set("seed", String(PollinationsConfig.seed));
+    if (PollinationsConfig.seed !== undefined && PollinationsConfig.seed !== -1) {
+      params.set("seed", String(PollinationsConfig.seed));
+    } else {
+      // 默认使用随机种子，确保并发生成时产生不同的图片
+      const randomSeed = Math.floor(Math.random() * 1000000000);
+      params.set("seed", String(randomSeed));
+    }
     const q = getProviderTaskDefaults(this.name, "edit").quality ?? PollinationsConfig.quality;
     if (q !== undefined) {
       params.set("quality", String(q));

@@ -318,8 +318,9 @@ export abstract class BaseProvider implements IProvider {
 
   /**
    * 智能选择生成数量
-   * 非魔搭渠道优先级：请求指定 -> 运行时覆盖配置 -> 默认配置 -> 1
-   * 魔搭渠道优先级：运行时覆盖配置 -> 默认配置 -> 1（忽略请求中的 n）
+   * 优先级策略：
+   * 1. 指定渠道（ModelScope/Pollinations/Gitee/HuggingFace）：运行时覆盖配置 -> 默认配置 -> 1（忽略请求中的 n）
+   * 2. 其他渠道：请求指定 -> 运行时覆盖配置 -> 默认配置 -> 1
    *
    * @param {number} [requestCount] - 请求中指定的数量
    * @param {boolean} hasImages - 是否包含输入图片
@@ -336,11 +337,18 @@ export abstract class BaseProvider implements IProvider {
       }`
     );
 
-    // ModelScope 特例：强制优先使用 WebUI 运行时配置
-    // 如果 WebUI 中配置了 n，则无视请求参数，直接使用配置值
-    if (this.name === "ModelScope") {
+    // 强制优先使用 WebUI 运行时配置的渠道列表
+    // 这些渠道通常需要通过配置来强制控制并发数（如防止滥用或加速）
+    const forceOverrideProviders: ProviderName[] = [
+      "ModelScope",
+      "Pollinations",
+      "Gitee",
+      "HuggingFace",
+    ];
+
+    if (forceOverrideProviders.includes(this.name)) {
       if (override.n !== undefined && override.n !== null) {
-        info(this.name, `Using ModelScope override n=${override.n}`);
+        info(this.name, `Using ${this.name} override n=${override.n}`);
         return override.n;
       }
     }
@@ -420,7 +428,9 @@ export abstract class BaseProvider implements IProvider {
       remainingN -= currentBatchN;
 
       const subRequest = { ...request, n: currentBatchN };
-      const taskDelay = batchIndex * 200; // 简单的限流策略：每个任务间隔 200ms
+      // 增加并发延迟以避免触发服务端的速率限制或连接错误（如 tls handshake eof）
+      // Pollinations 等免费渠道对并发非常敏感，建议至少 1.5s - 2s
+      const taskDelay = batchIndex * 1500; 
 
       const taskPromise = (async () => {
         if (taskDelay > 0) await new Promise((r) => setTimeout(r, taskDelay));
