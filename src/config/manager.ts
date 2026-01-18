@@ -149,6 +149,8 @@ export interface HuggingFaceConfig {
   defaultSize: string;
   /** 默认编辑尺寸 */
   defaultEditSize: string;
+  /** 默认推理步数 */
+  defaultSteps?: number;
   /** 支持的生成模型列表 */
   textModels: string[];
   /** 支持的编辑模型列表 */
@@ -291,6 +293,14 @@ export interface ProviderTaskDefaults {
   size?: string | null;
   quality?: string | null;
   n?: number | null;
+  steps?: number | null;
+  /** 任务权重 (0-100)，用于路由优先级 */
+  weight?: number;
+  /** AI 聊天/增强配置 */
+  aiChat?: {
+    translate?: boolean;
+    expand?: boolean;
+  };
 }
 
 export type ProviderTaskDefaultsPatch = Partial<ProviderTaskDefaults>;
@@ -301,6 +311,8 @@ export type ProviderTaskDefaultsPatch = Partial<ProviderTaskDefaults>;
 export interface RuntimeProviderConfig {
   /** 是否启用 */
   enabled?: boolean;
+  /** 默认推理步数 (HuggingFace 等) */
+  defaultSteps?: number;
   /** 文本生成任务默认配置 */
   text?: ProviderTaskDefaults;
   /** 编辑任务默认配置 */
@@ -321,12 +333,36 @@ export interface SystemConfig {
 }
 
 /**
+ * AI 聊天服务全局配置 (用于翻译和扩充 Prompt)
+ */
+export interface AiChatConfig {
+  /** LLM API 基础地址 (OpenAI 兼容) */
+  baseUrl: string;
+  /** API Key */
+  apiKey: string;
+  /** 模型名称 */
+  model: string;
+  /** 是否启用翻译 */
+  enableTranslate?: boolean;
+  /** 翻译提示词模板 */
+  translatePrompt?: string;
+  /** 是否启用扩充 */
+  enableExpand?: boolean;
+  /** 扩充提示词模板 */
+  expandPrompt?: string;
+}
+
+/**
  * 运行时完整配置
  */
 export interface RuntimeConfig {
   system: SystemConfig;
   providers: Record<string, RuntimeProviderConfig>;
   keyPools: Record<string, KeyPoolItem[]>;
+  /** 全局 AI 聊天服务配置 */
+  aiChat?: AiChatConfig;
+  /** HuggingFace 模型到 URL 的映射配置 */
+  hfModelMap?: Record<string, { main: string; backup?: string }>;
 }
 
 export type DynamicSystemConfig = SystemConfig; // 别名
@@ -520,6 +556,7 @@ const DEFAULT_CONFIG: AppConfig = {
       defaultEditModel: "Qwen-Image-Edit-2511",
       defaultSize: "1024x1024",
       defaultEditSize: "1024x1024",
+      defaultSteps: 4,
       textModels: [
         "z-image-turbo",
       ],
@@ -665,6 +702,14 @@ class ConfigManager {
         changed = true;
       }
 
+      if (typeof r.defaultSteps === "number") {
+        next.defaultSteps = r.defaultSteps;
+      } else if ("defaultSteps" in r && r.defaultSteps !== null) {
+         // 如果存在但不是数字，或者是 null，视情况处理
+         // 这里简单起见，如果是不合法的就丢弃（changed=true）
+         changed = true;
+      }
+
       const sanitizeDefaults = (val: unknown): ProviderTaskDefaults | undefined => {
         if (!val || typeof val !== "object") return undefined;
         const v = val as Record<string, unknown>;
@@ -676,8 +721,19 @@ class ConfigManager {
           out.quality = v.quality as string | null;
         }
         if (typeof v.n === "number" || v.n === null) out.n = v.n as number | null;
+        if (typeof v.steps === "number" || v.steps === null) out.steps = v.steps as number | null;
+        if (typeof v.weight === "number") out.weight = v.weight;
 
-        const allowedKeys = new Set(["model", "size", "quality", "n"]);
+        // 处理 aiChat
+        if (v.aiChat && typeof v.aiChat === "object") {
+          const ai = v.aiChat as Record<string, unknown>;
+          out.aiChat = {
+            translate: typeof ai.translate === "boolean" ? ai.translate : undefined,
+            expand: typeof ai.expand === "boolean" ? ai.expand : undefined,
+          };
+        }
+
+        const allowedKeys = new Set(["model", "size", "quality", "n", "weight", "aiChat", "steps"]);
         for (const k of Object.keys(v)) {
           if (!allowedKeys.has(k)) {
             changed = true;
@@ -714,6 +770,8 @@ class ConfigManager {
         system: config.system || {},
         providers,
         keyPools: config.keyPools || {},
+        aiChat: config.aiChat,
+        hfModelMap: config.hfModelMap,
       },
     };
   }
@@ -733,6 +791,8 @@ class ConfigManager {
           system: loaded.system || {},
           providers: loaded.providers || {},
           keyPools: loaded.keyPools || {},
+          aiChat: loaded.aiChat,
+          hfModelMap: loaded.hfModelMap,
         };
       }
 
@@ -743,6 +803,8 @@ class ConfigManager {
           system: loaded.system || {},
           providers: loaded.providers || {},
           keyPools: loaded.keyPools || {},
+          aiChat: loaded.aiChat,
+          hfModelMap: loaded.hfModelMap,
         };
       }
     } catch (e) {
@@ -1145,6 +1207,41 @@ export const setProviderTaskDefaults = (
 ) => configManager.setProviderTaskDefaults(provider, task, defaults);
 export const setProviderEnabled = (provider: string, enabled: boolean) =>
   configManager.setProviderEnabled(provider, enabled);
+
+export const getAiChatConfig = (): AiChatConfig | undefined => {
+  const runtime = configManager.getRuntimeConfig();
+  const config = runtime.aiChat;
+  
+  const envBaseUrl = process.env.AI_CHAT_BASE_URL;
+  const envApiKey = process.env.AI_CHAT_API_KEY;
+  const envModel = process.env.AI_CHAT_MODEL;
+
+  if (!config && !envBaseUrl && !envApiKey) {
+    return undefined;
+  }
+
+  return {
+    baseUrl: envBaseUrl || config?.baseUrl || "",
+    apiKey: envApiKey || config?.apiKey || "",
+    model: envModel || config?.model || "gpt-3.5-turbo",
+    enableTranslate: config?.enableTranslate,
+    translatePrompt: config?.translatePrompt,
+    enableExpand: config?.enableExpand,
+    expandPrompt: config?.expandPrompt,
+  };
+};
+export const updateAiChatConfig = (config: AiChatConfig) => {
+  const runtime = configManager.getRuntimeConfig();
+  runtime.aiChat = config;
+  configManager.replaceRuntimeConfig(runtime);
+};
+
+export const getHfModelMap = () => configManager.getRuntimeConfig().hfModelMap || {};
+export const updateHfModelMap = (map: Record<string, { main: string; backup?: string }>) => {
+  const runtime = configManager.getRuntimeConfig();
+  runtime.hfModelMap = map;
+  configManager.replaceRuntimeConfig(runtime);
+};
 
 export const getKeyPool = (provider: string) => configManager.getKeyPool(provider);
 export const updateKeyPool = (provider: string, keys: KeyPoolItem[]) =>

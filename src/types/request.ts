@@ -88,6 +88,8 @@ export interface ImagesRequest {
   response_format?: "url" | "b64_json";
   /** 是否流式输出 */
   stream?: boolean;
+  /** 推理步数 */
+  steps?: number;
   /** 允许其他任意扩展字段 */
   [key: string]: unknown;
 }
@@ -113,6 +115,8 @@ export interface ImagesEditRequest {
   response_format?: "url" | "b64_json";
   /** 是否流式输出 */
   stream?: boolean;
+  /** 推理步数 */
+  steps?: number;
   /** 允许其他任意扩展字段 */
   [key: string]: unknown;
 }
@@ -198,6 +202,8 @@ export interface ImageGenerationRequest {
   messages?: Message[];
   /** 是否流式输出 */
   stream?: boolean;
+  /** 推理步数 */
+  steps?: number;
   /** 允许其他任意扩展字段 */
   [key: string]: unknown;
 }
@@ -220,6 +226,8 @@ export interface ImagesBlendRequest {
   size?: string;
   /** 响应格式 */
   response_format?: "url" | "b64_json";
+  /** 推理步数 */
+  steps?: number;
   /** 允许其他任意扩展字段 */
   [key: string]: unknown;
 }

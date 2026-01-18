@@ -79,6 +79,8 @@ export interface ProviderConfig {
   defaultBlendSize?: string;
   /** 默认融合生图数量（可选） */
   defaultBlendCount?: number;
+  /** 默认推理步数（可选） */
+  defaultSteps?: number;
 }
 
 /**

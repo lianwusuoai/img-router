@@ -15,6 +15,9 @@
  */
 
 import { encodeBase64 } from "@std/encoding/base64";
+import {
+  getProviderTaskDefaults,
+} from "../config/manager.ts";
 import type {
   ImageData,
   ImageGenerationRequest,
@@ -97,6 +100,7 @@ export async function handleImagesEdits(req: Request): Promise<Response> {
     let prompt = "";
     let model: string | undefined;
     let size: string | undefined;
+    let steps: number | undefined;
     let responseFormat: "url" | "b64_json" = "url";
     const images: string[] = [];
 
@@ -108,6 +112,8 @@ export async function handleImagesEdits(req: Request): Promise<Response> {
       prompt = (formData.get("prompt") as string) || "";
       model = (formData.get("model") as string) || undefined;
       size = (formData.get("size") as string) || undefined;
+      const stepsVal = formData.get("steps");
+      if (stepsVal) steps = Number(stepsVal);
 
       const rf = formData.get("response_format");
       if (typeof rf === "string" && (rf === "url" || rf === "b64_json")) {
@@ -163,6 +169,7 @@ export async function handleImagesEdits(req: Request): Promise<Response> {
         prompt = body?.prompt || "";
         model = body?.model;
         size = body?.size;
+        steps = body?.steps;
 
         if (body?.response_format) {
           responseFormat = body.response_format;
@@ -192,6 +199,7 @@ export async function handleImagesEdits(req: Request): Promise<Response> {
 
     // 3. 图片预处理
     const compressedImages = await normalizeAndCompressInputImages(images);
+    const defaults = getProviderTaskDefaults(provider.name, "edit");
 
     debug(
       "Router",
@@ -205,6 +213,7 @@ export async function handleImagesEdits(req: Request): Promise<Response> {
       images: compressedImages,
       model,
       size,
+      steps: steps || defaults.steps || undefined,
       response_format: responseFormat,
     };
 

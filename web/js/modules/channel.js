@@ -106,10 +106,6 @@ function formatSizeWithRatio(size) {
   return `${rw}:${rh} ${size}`;
 }
 
-function formatDoubaoSizeLabel(size) {
-  return formatSizeWithRatio(size);
-}
-
 /**
  * 渲染渠道设置页面
  *
@@ -194,11 +190,33 @@ function renderAllChannels(providers) {
     if (!providerDefaults) {
       providerDefaults = (channelRuntimeConfig.providers || {})[provider.name.toLowerCase()] || {};
     }
+    
+    // Inject global default steps into provider object for fallback usage in UI
+    provider.defaultSteps = providerDefaults.defaultSteps || provider.defaultSteps || 4;
 
     const textDefaults = providerDefaults.text || {};
     const editDefaults = providerDefaults.edit || {};
     const blendDefaults = providerDefaults.blend || {};
     const isEnabled = provider.enabled !== false;
+
+    let extraConfigHtml = "";
+    if (provider.name === "HuggingFace") {
+      extraConfigHtml = `
+        <div style="padding: 0 0 16px 0; border-bottom: 1px solid var(--border-color); margin-bottom: 16px;">
+            <div style="display: flex; gap: 24px; align-items: flex-start;">
+                <div class="form-group" style="margin-bottom: 0; flex: 1;">
+                    <label class="form-label" style="display:flex; justify-content:space-between; align-items:center;">
+                        <span>模型映射 (Model Map)</span>
+                        <button class="btn-text" id="btn-edit-hf-map" style="font-size: 12px; color: var(--primary); background: none; border: none; cursor: pointer; padding: 0;">编辑映射</button>
+                    </label>
+                    <div class="help-text" style="font-size: 12px; color: var(--text-secondary); margin-top: 4px;">
+                        配置模型名称到具体 Space URL 的映射关系。
+                    </div>
+                </div>
+            </div>
+        </div>
+      `;
+    }
 
     const section = document.createElement("div");
     section.className = "form-section";
@@ -222,6 +240,7 @@ function renderAllChannels(providers) {
                     </label>
                 </div>
             </div>
+            ${extraConfigHtml}
             <div class="channel-table" style="${
       isEnabled ? "" : "opacity:0.5; pointer-events:none; transition: opacity 0.3s;"
     }">
@@ -231,6 +250,7 @@ function renderAllChannels(providers) {
                     <div class="channel-header">尺寸</div>
                     <div class="channel-header">质量</div>
                     <div class="channel-header">生图数量</div>
+                    ${provider.name === "HuggingFace" ? '<div class="channel-header">推理步数</div>' : ""}
                 </div>
                 <div class="channel-row">
                     <div class="channel-label" title="只看本次发送的文字进行生图">
@@ -249,6 +269,7 @@ function renderAllChannels(providers) {
                     <div class="channel-cell">${
       buildCountSelect(provider, textDefaults.n, "text")
     }</div>
+                    ${provider.name === "HuggingFace" ? `<div class="channel-cell">${buildStepsInput(provider, textDefaults.steps, "text")}</div>` : ""}
                 </div>
                 <div class="channel-row">
                     <div class="channel-label" title="只看本次发送的图片和文字进行生图">
@@ -267,6 +288,7 @@ function renderAllChannels(providers) {
                     <div class="channel-cell">${
       buildCountSelect(provider, editDefaults.n, "edit")
     }</div>
+                    ${provider.name === "HuggingFace" ? `<div class="channel-cell">${buildStepsInput(provider, editDefaults.steps, "edit")}</div>` : ""}
                 </div>
                 <div class="channel-row">
                     <div class="channel-label" title="会参考上面对话的内容和图片，进行生图">
@@ -286,10 +308,21 @@ function renderAllChannels(providers) {
                     <div class="channel-cell">${
       buildCountSelect(provider, blendDefaults.n, "blend")
     }</div>
+                    ${provider.name === "HuggingFace" ? `<div class="channel-cell">${buildStepsInput(provider, blendDefaults.steps, "blend")}</div>` : ""}
                 </div>
             </div>
         `;
     container.appendChild(section);
+
+    if (provider.name === "HuggingFace") {
+      const btn = section.querySelector("#btn-edit-hf-map");
+      if (btn) {
+        btn.addEventListener("click", (e) => {
+          e.preventDefault();
+          openHfMapModal();
+        });
+      }
+    }
   }
 }
 
@@ -517,77 +550,59 @@ function buildCountSelect(provider, currentValue, task) {
 }
 
 /**
+ * 构建步数输入框
+ *
+ * @param {Object} provider - Provider 对象
+ * @param {number|string} currentValue - 当前选中的值
+ * @param {string} task - 任务类型
+ * @returns {string} HTML 字符串
+ */
+function buildStepsInput(provider, currentValue, task) {
+  const defaultSteps = provider.defaultSteps || 4; // Use global default if task specific is not set, though here we want task specific input
+  const value = currentValue !== undefined && currentValue !== null ? currentValue : defaultSteps;
+
+  return `<input type="number" class="form-control" data-provider="${provider.name}" data-task="${task}" data-field="steps" value="${value}" min="1" max="100" style="width: 80px;">`;
+}
+
+/**
  * 更新豆包尺寸选项
  *
  * @param {HTMLSelectElement} modelSelect - 触发变更的模型下拉框
  */
 function updateDoubaoSizeOptions(modelSelect) {
-  const providerName = modelSelect.dataset.provider;
-  const task = modelSelect.dataset.task;
-  const modelValue = modelSelect.value;
-
-  // 找到对应的尺寸下拉框
-  const sizeSelect = document.querySelector(
-    `select[data-provider="${providerName}"][data-task="${task}"][data-field="size"]`,
-  );
+  const row = modelSelect.closest(".channel-row");
+  const sizeSelect = row.querySelector('[data-field="size"]');
   if (!sizeSelect) return;
 
-  // 确定使用的尺寸列表
-  let sizes = [...DOUBAO_SIZES_4_5]; // 默认安全列表
-  if (modelValue.includes("4-0") || modelValue.includes("4.0")) {
-    sizes = [...DOUBAO_SIZES_4_0];
-  } else if (modelValue.includes("4-5") || modelValue.includes("4.5")) {
-    sizes = [...DOUBAO_SIZES_4_5];
+  const model = modelSelect.value;
+  let sizes = DOUBAO_SIZES_4_5;
+  if (model.includes("4-0") || model.includes("4.0")) {
+    sizes = DOUBAO_SIZES_4_0;
   }
 
-  // 保留当前选中的值（如果不在新列表中，可能需要添加到顶部或重置）
-  // 这里我们简单处理：如果当前值在新列表中，保持选中；否则重置为空（跟随默认）
-  // 或者，我们可以把旧值也加进去，但用户意图是切换模型，所以展示新模型的推荐尺寸更好。
-  // 为了防止当前选中的值是不合法的（例如从 4.0 切到 4.5，原值为 1024x1024），
-  // 我们应该检查合法性。如果不合法，重置为 Default。
-
+  // 保留当前选中的值（如果在列表里）
   const currentSize = sizeSelect.value;
-  let shouldKeepCurrent = false;
 
-  // 简单检查 currentSize 是否在 sizes 中
-  if (currentSize && sizes.includes(currentSize)) {
-    shouldKeepCurrent = true;
-  }
-
-  // 重新生成 options
-  // 1. 默认选项
-  // 我们需要获取 baseSize。这在 DOM 里没存，只能从 textDefaults 里拿吗？
-  // 简单起见，我们只保留 "跟随默认" 文本，不再计算 "跟随默认(2048x2048)" 这种动态文本，除非我们能获取到 defaultSize。
-  // 为了保持一致性，我们尝试保留原有的第一项文本，或者简化它。
-
-  // let defaultOptionText = "跟随默认";
-  // if (sizeSelect.options.length > 0) {
-  //     // 尝试复用第一项的文本，通常是 "跟随默认 (WxH)"
-  //     defaultOptionText = sizeSelect.options[0].text;
-  // }
-
-  let html = ""; // `<option value="">${defaultOptionText}</option>`;
-
-  // 如果当前值不在列表中，且不为空，我们是否要强制加进去？
-  // 用户的需求是“只显示支持的列表”，所以如果切到 4.5，原值是 1024x1024，就不应该显示在列表里了。
-  // 除非它被选中... 但它是不合法的。所以最好重置。
-
-  // 重新计算默认选中项
-  // 之前逻辑是 shouldKeepCurrent ? currentSize : (fallback to first)
-
-  const targetValue = shouldKeepCurrent ? currentSize : sizes[0];
-
+  // 重建 Options
+  sizeSelect.innerHTML = "";
   for (const s of sizes) {
-    const label = formatDoubaoSizeLabel(s);
-    const selected = (s === targetValue) ? "selected" : "";
-    html += `<option value="${s}" ${selected}>${label}</option>`;
+    const selected = (s === currentSize) ? "selected" : "";
+    const label = formatSizeWithRatio(s);
+    sizeSelect.insertAdjacentHTML(
+      "beforeend",
+      `<option value="${s}" ${selected}>${label}</option>`,
+    );
   }
 
-  sizeSelect.innerHTML = html;
-
-  // 如果原值被剔除了，sizeSelect.value 会变成 "" (第一项)，这符合预期。
-  // 此时如果不触发 change 事件，配置里的 size 就会变成 ""（跟随默认）。
-  // 这通常是安全的。
+  // 如果原来的值不在列表里，是否要强制添加？
+  // 按照 buildSizeSelect 逻辑，如果当前值不在推荐列表，通常会 unshift 进去
+  // 但这里作为联动更新，强制切回列表第一个可能更好
+  if (!sizes.includes(currentSize)) {
+    // 选中第一个
+    if (sizeSelect.options.length > 0) {
+      sizeSelect.selectedIndex = 0;
+    }
+  }
 }
 
 /**
@@ -596,118 +611,236 @@ function updateDoubaoSizeOptions(modelSelect) {
  * @param {HTMLSelectElement} modelSelect - 触发变更的模型下拉框
  */
 function updateModelScopeSizeOptions(modelSelect) {
-  const providerName = modelSelect.dataset.provider;
-  const task = modelSelect.dataset.task;
-  const modelValue = modelSelect.value || "";
-
-  // 找到对应的尺寸下拉框
-  const sizeSelect = document.querySelector(
-    `select[data-provider="${providerName}"][data-task="${task}"][data-field="size"]`,
-  );
+  const row = modelSelect.closest(".channel-row");
+  const sizeSelect = row.querySelector('[data-field="size"]');
   if (!sizeSelect) return;
 
-  // 确定使用的尺寸列表
-  let sizes = [...MODELSCOPE_SIZES_TEXT];
-  if (modelValue.toLowerCase().includes("qwen-image-edit")) {
-    sizes = [...MODELSCOPE_SIZES_EDIT];
-  }
+  const model = modelSelect.value || "";
+  const isQwenEdit = model.toLowerCase().includes("qwen-image-edit");
+  const sizes = isQwenEdit ? MODELSCOPE_SIZES_EDIT : MODELSCOPE_SIZES_TEXT;
 
+  // 保留当前选中的值（如果在列表里）
   const currentSize = sizeSelect.value;
-  let shouldKeepCurrent = false;
 
-  // 简单检查 currentSize 是否在 sizes 中
-  if (currentSize && sizes.includes(currentSize)) {
-    shouldKeepCurrent = true;
-  }
-
-  const targetValue = shouldKeepCurrent ? currentSize : sizes[0];
-
-  let html = "";
+  // 重建 Options
+  sizeSelect.innerHTML = "";
   for (const s of sizes) {
+    const selected = (s === currentSize) ? "selected" : "";
     const label = formatSizeWithRatio(s);
-    const selected = (s === targetValue) ? "selected" : "";
-    html += `<option value="${s}" ${selected}>${label}</option>`;
+    sizeSelect.insertAdjacentHTML(
+      "beforeend",
+      `<option value="${s}" ${selected}>${label}</option>`,
+    );
   }
 
-  sizeSelect.innerHTML = html;
+  if (!sizes.includes(currentSize)) {
+    if (sizeSelect.options.length > 0) {
+      sizeSelect.selectedIndex = 0;
+    }
+  }
 }
 
 /**
- * 防抖保存函数
+ * 防抖保存
  */
 const debounceSave = debounce(async () => {
-  await saveChannelSettings();
-}, 1000);
+  const payload = { providers: {} };
+  const container = document.getElementById("channelsContainer");
 
-/**
- * 保存渠道配置到后端
- */
-async function saveChannelSettings() {
-  const statusDot = document.querySelector(".status-pill .status-dot");
-  const statusText = document.querySelector(".status-pill span");
-  if (statusDot && statusText) {
-    statusDot.style.background = "#ffd700";
-    statusText.innerText = "保存中...";
-  }
+  // 遍历所有 inputs
+  const inputs = container.querySelectorAll(
+    "input[data-provider], select[data-provider], textarea[data-provider]",
+  );
 
-  try {
-    // 构建 providers 配置对象
-    const providersConfig = {};
+  inputs.forEach((input) => {
+    const provider = input.dataset.provider;
+    const task = input.dataset.task; // text, edit, blend
+    const field = input.dataset.field; // model, size, quality, n, enabled, defaultSteps
+    let value = input.value;
 
-    // 收集所有 provider 名称
-    const providerNames = new Set();
-    document.querySelectorAll("[data-provider]").forEach((el) =>
-      providerNames.add(el.dataset.provider)
-    );
-
-    for (const name of providerNames) {
-      const enabledInput = document.querySelector(
-        `input[data-provider="${name}"][data-field="enabled"]`,
-      );
-      const isEnabled = enabledInput ? enabledInput.checked : true;
-
-      const defaults = {};
-
-      document.querySelectorAll(`select[data-provider="${name}"]`).forEach((sel) => {
-        const task = sel.dataset.task; // text or edit
-        const field = sel.dataset.field; // model, size, quality, n
-        const val = sel.value;
-
-        if (val) { // 只有非空值才保存
-          if (!defaults[task]) defaults[task] = {};
-
-          if (field === "n") {
-            defaults[task][field] = parseInt(val, 10);
-          } else {
-            defaults[task][field] = val;
-          }
-        }
-      });
-
-      // 构建单个 provider 配置
-      providersConfig[name] = {
-        enabled: isEnabled,
-        ...defaults,
-      };
+    if (input.type === "checkbox") {
+      value = input.checked;
+    } else if (input.type === "number") {
+      value = Number(value);
     }
 
-    // 发送配置更新
-    await apiFetch("/api/runtime-config", {
+    if (!payload.providers[provider]) {
+      payload.providers[provider] = {};
+    }
+
+    // 处理 enabled 和 defaultSteps 等顶层属性
+    if (field === "enabled") {
+      payload.providers[provider].enabled = value;
+    } else if (field === "defaultSteps") {
+      // payload.providers[provider].defaultSteps = value; 
+      // User removed global steps, but if we keep it for backward compatibility or as a fallback
+      // Actually we removed the input from UI, so this branch won't be hit unless there are leftover inputs.
+      // But we added steps to tasks.
+      payload.providers[provider].defaultSteps = value;
+    } else if (task) {
+      if (!payload.providers[provider][task]) {
+        payload.providers[provider][task] = {};
+      }
+      payload.providers[provider][task][field] = value;
+    }
+  });
+
+  try {
+    const res = await apiFetch("/api/runtime-config", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ providers: providersConfig }),
+      body: JSON.stringify(payload),
+    });
+    if (res.ok) {
+      console.log("配置已自动保存");
+    } else {
+      console.error("保存失败");
+    }
+  } catch (e) {
+    console.error("保存出错", e);
+  }
+}, 1000);
+
+// ==========================================
+// HuggingFace Modal Logic
+// ==========================================
+
+let hfMapModal = null;
+
+async function openHfMapModal() {
+  // 1. Fetch current map
+  let currentMap = {};
+  try {
+    const res = await apiFetch("/api/config/hf-map");
+    if (res.ok) {
+      currentMap = await res.json();
+    }
+  } catch (e) {
+    console.error("Failed to fetch HF map", e);
+    alert("加载配置失败");
+    return;
+  }
+
+  // 2. Create Modal HTML if not exists
+  if (!hfMapModal) {
+    hfMapModal = document.createElement("div");
+    hfMapModal.style.cssText = `
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.5); z-index: 1000;
+            display: flex; justify-content: center; align-items: center;
+        `;
+    hfMapModal.innerHTML = `
+            <div class="card" style="width: 600px; max-height: 80vh; display: flex; flex-direction: column; background: var(--bg-card); box-shadow: 0 4px 12px rgba(0,0,0,0.2);">
+                <div class="card-header">
+                    <h3 class="card-title">HuggingFace 模型映射配置</h3>
+                    <button class="btn-text" id="closeHfMapModal" style="font-size: 20px; color: var(--text-primary);">&times;</button>
+                </div>
+                <div style="padding: 16px; overflow-y: auto; flex: 1;">
+                    <p style="font-size: 12px; color: var(--text-secondary); margin-bottom: 12px;">
+                        配置模型名称到 HuggingFace Space URL 的映射。Space URL 必须包含 https:// 前缀。
+                    </p>
+                    <table style="width: 100%; border-collapse: collapse;">
+                        <thead>
+                            <tr style="text-align: left; border-bottom: 1px solid var(--border-color);">
+                                <th style="padding: 8px; width: 40%;">模型名称</th>
+                                <th style="padding: 8px;">Space URL</th>
+                                <th style="width: 40px;"></th>
+                            </tr>
+                        </thead>
+                        <tbody id="hfMapTableBody"></tbody>
+                    </table>
+                    <button class="btn-secondary" id="addHfMapRow" style="margin-top: 12px; width: 100%;">+ 添加映射</button>
+                </div>
+                <div style="padding: 16px; border-top: 1px solid var(--border-color); text-align: right; display: flex; justify-content: flex-end; gap: 8px;">
+                    <button class="btn-secondary" id="cancelHfMap">取消</button>
+                    <button class="btn-primary" id="saveHfMap">保存</button>
+                </div>
+            </div>
+        `;
+    document.body.appendChild(hfMapModal);
+
+    // Bind events
+    hfMapModal.querySelector("#closeHfMapModal").onclick = closeHfMapModal;
+    hfMapModal.querySelector("#cancelHfMap").onclick = closeHfMapModal;
+    hfMapModal.querySelector("#addHfMapRow").onclick = () => addMapRow();
+    hfMapModal.querySelector("#saveHfMap").onclick = saveHfMap;
+  }
+
+  // 3. Render Table
+  const tbody = hfMapModal.querySelector("#hfMapTableBody");
+  tbody.innerHTML = "";
+
+  // Sort keys for consistent display
+  Object.keys(currentMap).sort().forEach((model) => {
+    const url = currentMap[model].main;
+    addMapRow(model, url);
+  });
+
+  // Add empty row if empty
+  if (Object.keys(currentMap).length === 0) {
+    addMapRow();
+  }
+
+  hfMapModal.style.display = "flex";
+}
+
+function closeHfMapModal() {
+  if (hfMapModal) hfMapModal.style.display = "none";
+}
+
+function addMapRow(model = "", url = "") {
+  const tbody = document.getElementById("hfMapTableBody");
+  if (!tbody) return;
+
+  const tr = document.createElement("tr");
+  tr.innerHTML = `
+        <td style="padding: 4px;">
+            <input type="text" class="form-control map-model" value="${model}" placeholder="e.g. flux-schnell" style="width: 100%;">
+        </td>
+        <td style="padding: 4px;">
+            <input type="text" class="form-control map-url" value="${url}" placeholder="https://...hf.space" style="width: 100%;">
+        </td>
+        <td style="padding: 4px; text-align: center;">
+            <button class="btn-text btn-delete-row" style="color: var(--danger); font-size: 18px; cursor: pointer;">&times;</button>
+        </td>
+    `;
+
+  const delBtn = tr.querySelector(".btn-delete-row");
+  delBtn.onclick = () => tr.remove();
+
+  tbody.appendChild(tr);
+}
+
+async function saveHfMap() {
+  const rows = document.querySelectorAll("#hfMapTableBody tr");
+  const newMap = {};
+
+  rows.forEach((row) => {
+    const modelInput = row.querySelector(".map-model");
+    const urlInput = row.querySelector(".map-url");
+    if (modelInput && urlInput) {
+      const model = modelInput.value.trim();
+      const url = urlInput.value.trim();
+
+      if (model && url) {
+        newMap[model] = { main: url };
+      }
+    }
+  });
+
+  try {
+    const res = await apiFetch("/api/config/hf-map", {
+      method: "POST",
+      body: JSON.stringify(newMap),
     });
 
-    if (statusDot) {
-      statusDot.style.background = "var(--success)";
-      statusText.innerText = "已保存";
-      setTimeout(() => {
-        statusText.innerText = "运行中";
-      }, 2000);
+    if (res.ok) {
+      // alert("保存成功"); // Optional
+      closeHfMapModal();
+    } else {
+      alert("保存失败");
     }
   } catch (e) {
     console.error(e);
-    if (statusDot) statusDot.style.background = "var(--error)";
-    statusText.innerText = "保存失败";
+    alert("保存出错");
   }
 }

@@ -386,6 +386,9 @@ export class PollinationsProvider extends BaseProvider {
 
     if (PollinationsConfig.seed !== undefined && PollinationsConfig.seed !== -1) {
       params.set("seed", String(PollinationsConfig.seed));
+    } else {
+      const randomSeed = Math.floor(Math.random() * 1000000000);
+      params.set("seed", String(randomSeed));
     }
     const q = getProviderTaskDefaults(this.name, "text").quality ?? PollinationsConfig.quality;
     if (q !== undefined) {

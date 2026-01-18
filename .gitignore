@@ -1,43 +1,27 @@
-# 日志和数据文件
+# 数据与敏感信息（实际存在：data/runtime-config.json）
 data/
-*.log
-logs/
-
-# 环境变量配置
 .env
 .env.*
+docker-compose.override.yml
 
-# IDE 配置
+# 日志（实际会产生）
+*.log
+
+# 临时目录（按项目约定）
+debug/
+test/
+
+# IDE
 .vscode/
 .idea/
 *.swp
 *.swo
 
-# 系统文件
+# 系统杂项
 .DS_Store
 Thumbs.db
+ehthumbs.db
+Desktop.ini
 
-# Rooroo 工作目录
-.rooroo/
-
-# ampcode 工作目录
-.amp/
-
-# Docker Compose 覆盖配置（本地使用）
-docker-compose.override.yml
-
-# Node.js（如果未来添加）
-node_modules/
-npm-debug.log*
-
-# Docker
-*.pid
-*.seed
-*.pid.lock
-
-.roomodes
-debug/
-test/
+# 本地参考目录（实际存在）
 docs/
-# Configuration
-config/config.yaml

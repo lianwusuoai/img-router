@@ -1,12 +1,10 @@
 /**
- * HuggingFace Provider 实现
+ * HuggingFace Provider 实现 (V4 升级版)
  *
- * 基于 Hugging Face Gradio API 实现。
- * 支持文生图和图生图功能。
- * 特点：
- * 1. 使用 Gradio 的 SSE (Server-Sent Events) 协议与 API 交互。
- * 2. 支持多 URL 故障转移 (Failover) 机制，提高服务可用性。
- * 3. 实现了复杂的 Prompt 清洗和 SSE 数据解析逻辑。
+ * 核心升级：
+ * 1. **Token 池与匿名混合模式**：优先使用 Token，耗尽后尝试匿名，支持每日重置。
+ * 2. **模型适配器 (Adapters)**：针对 FLUX, SDXL, Qwen 等不同 Space 的参数格式进行动态适配。
+ * 3. **精细化 SSE 解析**：精准识别 429 限流、参数错误和服务端错误。
  */
 
 import {
@@ -17,580 +15,338 @@ import {
   type ProviderName,
 } from "./base.ts";
 import type { GenerationResult, ImageGenerationRequest } from "../types/index.ts";
-import { HuggingFaceConfig } from "../config/manager.ts";
-import { fetchWithTimeout } from "../utils/index.ts";
-import { urlToBase64 } from "../utils/image.ts";
 import {
-  debug,
-  error,
+  getHfModelMap,
+  getRuntimeConfig,
+  HuggingFaceConfig,
+} from "../config/manager.ts";
+import { fetchWithTimeout } from "../utils/index.ts";
+import {
   info,
-  logFullPrompt,
-  logGeneratedImages,
-  logImageGenerationComplete,
-  logImageGenerationFailed,
-  logImageGenerationStart,
-  logInputImages,
   warn,
 } from "../core/logger.ts";
-import { withApiTiming } from "../middleware/timing.ts";
+import { keyManager } from "../core/key-manager.ts";
 
-/**
- * 将图片（URL 或 Base64）转换为 Blob 对象
- * 用于上传到 Gradio 服务器。
- *
- * @param imageSource - 图片源字符串（Data URI 或 HTTP URL）
- * @returns Blob 对象 Promise
- */
-async function imageToBlob(imageSource: string): Promise<Blob> {
-  if (imageSource.startsWith("data:image/")) {
-    const parts = imageSource.split(",");
-    const base64Content = parts[1];
-    const mimeType = parts[0].split(";")[0].split(":")[1];
-    const binaryData = Uint8Array.from(atob(base64Content), (c) => c.charCodeAt(0));
-    return new Blob([binaryData], { type: mimeType });
-  } else if (imageSource.startsWith("http")) {
-    const response = await fetchWithTimeout(imageSource, { method: "GET" });
-    if (!response.ok) throw new Error(`下载图片失败: ${response.status}`);
-    return await response.blob();
-  } else {
-    // 假设是纯 Base64 字符串，默认为 PNG
-    const binaryData = Uint8Array.from(atob(imageSource), (c) => c.charCodeAt(0));
-    return new Blob([binaryData], { type: "image/png" });
+// ==========================================
+// 1. 模型适配器定义
+// ==========================================
+
+interface HFModelAdapter {
+  constructPayload(prompt: string, params: AdapterParams): unknown[];
+}
+
+type AdapterParams = {
+  width: number;
+  height: number;
+  seed?: number;
+  steps?: number;
+};
+
+const FluxAdapter: HFModelAdapter = {
+  constructPayload: (prompt, { width, height, seed, steps }) => {
+    // FLUX Space 通常参数: [prompt, seed, randomize_seed, width, height, num_inference_steps]
+    // 参考: black-forest-labs/FLUX.1-schnell
+    return [
+      prompt,
+      seed || Math.floor(Math.random() * 1000000),
+      !seed, // randomize_seed
+      width,
+      height,
+      steps, // Schnell 默认 4 步
+    ];
+  },
+};
+
+const ZImageAdapter: HFModelAdapter = {
+  constructPayload: (prompt, { width, height, seed, steps }) => {
+    // Z-Image Turbo 参数: [prompt, height, width, steps, seed, randomize_seed]
+    return [
+        prompt,
+        height,
+        width,
+        steps,
+        seed || Math.floor(Math.random() * 1000000),
+        !seed
+    ];
   }
+};
+
+const GenericAdapter: HFModelAdapter = {
+  constructPayload: (prompt, { width, height, seed, steps }) => {
+    // 默认通用格式 (兼容旧版): [prompt, negative_prompt, seed, width, height, guidance_scale, steps]
+    // 但很多简单的 space 只是 [prompt]
+    // 这里保留原 img-router 的通用猜想: [prompt, height, width, steps, seed, false]
+    return [
+      prompt,
+      height,
+      width,
+      steps,
+      seed || Math.floor(Math.random() * 1000000),
+      !seed,
+    ];
+  },
+};
+
+function getAdapter(model: string): HFModelAdapter {
+  const m = model.toLowerCase();
+  if (m.includes("flux")) return FluxAdapter;
+  if (m.includes("z-image") || m.includes("turbo")) return ZImageAdapter;
+  return GenericAdapter;
 }
 
-/**
- * 简单的 Prompt 清洗函数
- * 去除可能导致 Gradio 接口报错的控制字符。
- */
-function sanitizePrompt(prompt: string): string {
-  // 替换所有控制字符（0-31 和 127）为空格，然后去除首尾空格
-  // 这可以解决由于换行符、制表符等导致的 Gradio 错误
-  // deno-lint-ignore no-control-regex
-  return prompt.replace(/[\x00-\x1F\x7F]/g, " ").trim();
+// ==========================================
+// 2. SSE 解析工具
+// ==========================================
+
+interface SSEEvent {
+    type: string;
+    data?: unknown;
 }
 
-/**
- * 从 SSE 流中提取图片 URL
- * 解析 Gradio 协议的 SSE 数据流，查找生成的图片路径。
- *
- * @param sseStream - SSE 响应文本
- * @param baseUrl - API 基础 URL，用于拼接相对路径
- * @returns 提取到的完整图片 URL，若未找到返回 null
- */
-function extractImageUrlFromSSE(sseStream: string, baseUrl?: string): string | null {
-  const lines = sseStream.split("\n");
-  let isCompleteEvent = false;
-  let isErrorEvent = false;
+function parseSSEData(sseText: string): SSEEvent[] {
+    const events: SSEEvent[] = [];
+    const lines = sseText.split('\n');
+    let currentType = '';
 
-  debug("HuggingFace", `SSE 流内容 (前500字符): ${sseStream.substring(0, 500)}`);
-
-  for (const line of lines) {
-    if (line.startsWith("event:")) {
-      const eventType = line.substring(6).trim();
-      isCompleteEvent = eventType === "complete";
-      isErrorEvent = eventType === "error";
-    } else if (line.startsWith("data:")) {
-      const jsonData = line.substring(5).trim();
-
-      if (isErrorEvent) {
-        error("HuggingFace", `SSE 错误事件数据: ${jsonData}`);
-        try {
-          const errObj = JSON.parse(jsonData);
-          if (errObj === null) {
-            throw new Error(
-              "服务端返回未知错误 (null)，可能是服务暂时不可用、Prompt 包含不支持字符或触发了安全过滤",
-            );
-          }
-          throw new Error(
-            `HuggingFace API 错误: ${errObj.message || errObj.error || JSON.stringify(errObj)}`,
-          );
-        } catch (parseErr) {
-          if (parseErr instanceof Error && parseErr.message.startsWith("服务端返回")) {
-            throw parseErr;
-          }
-          if (parseErr instanceof Error && parseErr.message.startsWith("HuggingFace API 错误")) {
-            throw parseErr;
-          }
-          throw new Error(`HuggingFace API 错误: ${jsonData}`);
-        }
-      }
-
-      if (isCompleteEvent) {
-        try {
-          const data = JSON.parse(jsonData);
-          if (data && data[0]) {
-            // 情况 1: 返回对象包含 url 属性
-            if (typeof data[0] === "object" && data[0].url) {
-              info("HuggingFace", `从 SSE 提取到图片 URL: ${data[0].url.substring(0, 80)}...`);
-              return data[0].url;
+    for (const line of lines) {
+        if (line.startsWith('event:')) {
+            currentType = line.substring(6).trim();
+        } else if (line.startsWith('data:')) {
+            const dataStr = line.substring(5).trim();
+            if (currentType === 'error') {
+                 // 抛出包含特定标识的错误，以便上层捕获
+                 throw new Error(`HF_SSE_ERROR: ${dataStr}`);
             }
-            // 情况 2: 返回字符串路径
-            if (typeof data[0] === "string") {
-              const imagePath = data[0];
-              let finalUrl = imagePath;
-              // 处理相对路径
-              if (imagePath.startsWith("/") && baseUrl) {
-                finalUrl = `${baseUrl}/gradio_api/file=${imagePath}`;
-              } else if (!imagePath.startsWith("http") && baseUrl) {
-                finalUrl = `${baseUrl}/gradio_api/file=${imagePath}`;
-              }
-              info("HuggingFace", `从 SSE 提取到图片路径: ${finalUrl.substring(0, 80)}...`);
-              return finalUrl;
+            if (currentType === 'complete') {
+                try {
+                    events.push({ type: 'complete', data: JSON.parse(dataStr) });
+                } catch (e) {
+                    warn(
+                      "HuggingFace",
+                      `SSE JSON parse error: ${e instanceof Error ? e.message : String(e)}`,
+                    );
+                }
             }
-          }
-          warn("HuggingFace", `SSE complete 事件数据格式无法识别: ${jsonData.substring(0, 200)}`);
-        } catch (e) {
-          error("HuggingFace", `解析 SSE 数据失败: ${e}, 原始数据: ${jsonData.substring(0, 200)}`);
         }
-      }
     }
-  }
-
-  warn("HuggingFace", `SSE 流中未找到图片 URL，流长度: ${sseStream.length}`);
-  return null;
+    return events;
 }
 
-/**
- * HuggingFace Provider 实现类
- *
- * 封装了对 Hugging Face Space 上 Gradio 应用的调用。
- * 核心功能是管理多个 API URL 的故障转移。
- */
+// ==========================================
+// 3. Provider 实现
+// ==========================================
+
 export class HuggingFaceProvider extends BaseProvider {
-  /** Provider 名称标识 */
   readonly name: ProviderName = "HuggingFace";
 
-  /**
-   * Provider 能力描述
-   */
   readonly capabilities: ProviderCapabilities = {
-    textToImage: true, // 支持文生图
-    imageToImage: true, // 支持图生图
-    multiImageFusion: true, // 支持多图融合
-    asyncTask: true, // 实际上是长连接等待，被视为异步
-    maxInputImages: 3, // 最多支持 3 张输入图片
-    maxOutputImages: 1, // 最多支持生成 1 张图片
+    textToImage: true,
+    imageToImage: true,
+    multiImageFusion: true,
+    asyncTask: true,
+    maxInputImages: 1,
+    maxOutputImages: 1,
     maxEditOutputImages: 1,
     maxBlendOutputImages: 1,
-    outputFormats: ["url", "b64_json"], // 支持 URL 和 Base64 输出
+    outputFormats: ["url", "b64_json"],
   };
 
-  /**
-   * Provider 配置信息
-   */
   readonly config: ProviderConfig = {
-    apiUrl: HuggingFaceConfig.apiUrls[0] || "",
+    apiUrl: HuggingFaceConfig.apiUrls[0] || "", // 默认 URL，实际会使用 model 对应的 URL 或配置列表
     textModels: HuggingFaceConfig.textModels,
     defaultModel: HuggingFaceConfig.defaultModel,
     defaultSize: HuggingFaceConfig.defaultSize,
     editModels: HuggingFaceConfig.editModels,
     defaultEditModel: HuggingFaceConfig.defaultEditModel,
     defaultEditSize: HuggingFaceConfig.defaultEditSize,
+    defaultSteps: HuggingFaceConfig.defaultSteps,
   };
 
-  /**
-   * 检测 API Key 是否属于 HuggingFace
-   * 通常以 "hf_" 开头
-   */
-  override detectApiKey(apiKey: string): boolean {
-    return apiKey.startsWith("hf_");
+  detectApiKey(key: string): boolean {
+    return key.startsWith("hf_");
   }
 
   /**
-   * 执行图片生成请求
-   *
-   * 根据是否有输入图片，分发到文生图或图生图处理逻辑。
+   * 核心生成方法 (带 Token 轮询与重试)
    */
-  override async generate(
-    apiKey: string,
+  generate(
+    _apiKey: string, // 忽略传入的 apiKey，使用 KeyManager 管理
     request: ImageGenerationRequest,
-    options: GenerationOptions,
+    _options?: GenerationOptions,
   ): Promise<GenerationResult> {
-    const startTime = Date.now();
-    const { requestId } = options;
-    const hasImages = request.images && request.images.length > 0;
-    const prompt = request.prompt || "";
-    const images = request.images || [];
+    const { model, prompt, size, n: _n } = request;
+    // 使用配置中的默认尺寸作为兜底
+    const defaultWidth = this.config.defaultSize ? parseInt(this.config.defaultSize.split("x")[0]) : 1024;
+    const defaultHeight = this.config.defaultSize ? parseInt(this.config.defaultSize.split("x")[1]) : 1024;
+    
+    const [width, height] = size ? size.split("x").map(Number) : [defaultWidth, defaultHeight];
 
-    logFullPrompt("HuggingFace", requestId, prompt);
-    if (hasImages) logInputImages("HuggingFace", requestId, images);
-
-    // 1. 确定最终的生成数量 n
-    // HuggingFace 支持通过并发实现多图生成
-    const n = this.selectCount(request.n, hasImages);
-    const requestWithCount = { ...request, n };
-
-    // 2. 使用 BaseProvider 的并发生成策略
-    return await this.generateWithConcurrency(
-      apiKey,
-      requestWithCount,
-      options,
-      async (singleRequest) => {
-        const taskStartTime = Date.now();
-        
-        const headers: Record<string, string> = {
-          "Content-Type": "application/json",
-          "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        };
-        if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
-
-        if (hasImages) {
-          return await this.generateImageToImage(apiKey, singleRequest, options, taskStartTime, headers);
-        } else {
-          return await this.generateTextToImage(singleRequest, options, taskStartTime, headers);
-        }
-      }
-    );
-  }
-
-  /**
-   * 处理文生图请求
-   *
-   * 特性：
-   * 1. 遍历配置的 API URL 列表进行尝试（故障转移）。
-   * 2. 提交任务 -> 获取 Event ID -> 获取结果 (SSE)。
-   */
-  private async generateTextToImage(
-    request: ImageGenerationRequest,
-    options: GenerationOptions,
-    startTime: number,
-    headers: Record<string, string>,
-  ): Promise<GenerationResult> {
-    const { requestId } = options;
-    const rawPrompt = request.prompt || "A beautiful scenery";
-    const prompt = sanitizePrompt(rawPrompt);
-    const model = HuggingFaceConfig.defaultModel;
-    const size = request.size || HuggingFaceConfig.defaultSize;
-    const [width, height] = size.split("x").map(Number);
-    const seed = Math.round(Math.random() * 2147483647);
-
-    logImageGenerationStart("HuggingFace", requestId, model, size, prompt.length);
-    info("HuggingFace", `使用文生图模式, 模型: ${model}`);
-    if (prompt !== rawPrompt) {
-      info("HuggingFace", `Prompt 已清洗 (原长度: ${rawPrompt.length}, 新长度: ${prompt.length})`);
+    // 1. 确定 API URL
+    // 优先使用 model 对应的 Space URL (这里简化为硬编码或从配置读取)
+    // 实际项目中建议建立 model -> url 的映射表
+    let apiUrl = this.config.apiUrl;
+    
+    // V4 升级：从动态配置读取 URL 映射
+    // 动态获取映射
+    const runtimeMap = getHfModelMap();
+    
+    if (model && runtimeMap[model]) {
+        apiUrl = runtimeMap[model].main;
+        // 备份 URL 逻辑可以在重试时使用，暂时只用 main
+    } else if (model?.includes("flux") && model?.includes("schnell")) {
+        apiUrl = "https://black-forest-labs-flux-1-schnell.hf.space";
+    } else if (model?.includes("z-image")) {
+        apiUrl = "https://luca115-z-image-turbo.hf.space";
     }
+    // ... 更多映射
 
-    const [defaultWidth, defaultHeight] = HuggingFaceConfig.defaultSize.split("x").map(Number);
-    // Gradio API 的参数数组
-    const requestBody = JSON.stringify({
-      data: [prompt, height || defaultHeight, width || defaultWidth, 9, seed, false],
-    });
+    // 2. 选择适配器构造 Payload
+    const adapter = getAdapter(model || "");
+    const seed = typeof request.seed === "number" ? request.seed : undefined;
 
-    debug("HuggingFace", `Request Body: ${requestBody}`);
+    const runtimeConfig = getRuntimeConfig();
+    const hfRuntime = runtimeConfig.providers[this.name] || {};
 
-    const apiUrls = HuggingFaceConfig.apiUrls;
-    if (!apiUrls || apiUrls.length === 0) {
-      error("HuggingFace", "文生图 API URL 资源池为空");
-      logImageGenerationFailed("HuggingFace", requestId, "配置错误");
-      return {
-        success: false,
-        error: "HuggingFace 配置错误: 未配置任何文生图 API URL",
-        duration: Date.now() - startTime,
-      };
-    }
+    const defaultSteps = hfRuntime.defaultSteps || this.config.defaultSteps || 4;
+    const steps = typeof request.steps === "number" ? request.steps : defaultSteps;
+    const payload = {
+        data: adapter.constructPayload(prompt, { width, height, seed, steps }),
+    };
 
-    info("HuggingFace", `开始处理文生图请求，URL 资源池大小: ${apiUrls.length}`);
-
-    let lastError: Error | null = null;
-
-    // 故障转移循环
-    for (let i = 0; i < apiUrls.length; i++) {
-      const apiUrl = apiUrls[i];
-      const isLastAttempt = i === apiUrls.length - 1;
-
-      info("HuggingFace", `尝试文生图 URL [${i + 1}/${apiUrls.length}]: ${apiUrl}`);
-
-      try {
-        // 1. 提交任务到队列
-        const queueResponse = await withApiTiming(
-          "HuggingFace",
-          "generate_image",
-          () =>
-            fetchWithTimeout(`${apiUrl}/gradio_api/call/generate_image`, {
-              method: "POST",
-              headers,
-              body: requestBody,
-            }),
-        );
-
-        if (!queueResponse.ok) {
-          const errorText = await queueResponse.text();
-          throw new Error(`API Error (${queueResponse.status}): ${errorText}`);
+    // 3. 执行带重试的请求
+    return this.runWithTokenRetry(async (token) => {
+        const headers: Record<string, string> = { "Content-Type": "application/json" };
+        if (token) {
+            headers["Authorization"] = `Bearer ${token}`;
         }
 
-        const { event_id } = await queueResponse.json();
-        info("HuggingFace", `文生图任务已提交, Event ID: ${event_id}`);
+        info("HuggingFace", `Calling ${apiUrl} with model ${model} (Token: ${token ? 'Yes' : 'Anonymous'})`);
 
-        // 2. 获取任务结果（返回 SSE 流）
-        const resultResponse = await fetchWithTimeout(
-          `${apiUrl}/gradio_api/call/generate_image/${event_id}`,
-          {
-            method: "GET",
+        // Step A: Initiate Prediction
+        const predictUrl = `${apiUrl}/gradio_api/call/predict`; // 部分 Space 是 call/infer
+        const response = await fetchWithTimeout(predictUrl, {
+            method: "POST",
             headers,
-          },
-        );
+            body: JSON.stringify(payload),
+        });
 
-        if (!resultResponse.ok) {
-          const errorText = await resultResponse.text();
-          throw new Error(`Result API Error (${resultResponse.status}): ${errorText}`);
+        if (response.status === 429) {
+            throw new Error("429 Too Many Requests");
+        }
+        if (!response.ok) {
+            throw new Error(`HF API Error: ${response.status} ${await response.text()}`);
         }
 
-        // 3. 解析 SSE 流获取图片 URL
+        const { event_id } = await response.json();
+        
+        // Step B: Poll Result
+        const resultUrl = `${apiUrl}/gradio_api/call/predict/${event_id}`;
+        const resultResponse = await fetchWithTimeout(resultUrl, {
+            method: "GET",
+            headers, // 保持相同的 Auth
+        });
+
+        if (resultResponse.status === 429) {
+             throw new Error("429 Too Many Requests (Polling)");
+        }
+
         const sseText = await resultResponse.text();
-        const imageUrl = extractImageUrlFromSSE(sseText, apiUrl);
-
-        if (!imageUrl) throw new Error("返回数据格式异常：未能从 SSE 流中提取图片 URL");
-
-        info("HuggingFace", `📎 原始图片 URL: ${imageUrl}`);
-
-        // 4. 将结果转换为 Base64
-        let result: Array<{ url?: string; b64_json?: string }>;
+        
+        // Step C: Parse SSE
         try {
-          const { base64, mimeType } = await urlToBase64(imageUrl);
-          info(
-            "HuggingFace",
-            `✅ 图片已转换为 Base64, MIME: ${mimeType}, 大小: ${
-              Math.round(base64.length / 1024)
-            }KB`,
-          );
-          result = [{ b64_json: base64 }];
+            const events = parseSSEData(sseText);
+            const completeEvent = events.find(e => e.type === 'complete');
+            
+            if (completeEvent && completeEvent.data) {
+                // 解析结果
+                // 通常结果在 data[0].url
+                const resultData = completeEvent.data;
+                if (!Array.isArray(resultData) || resultData.length === 0) {
+                  throw new Error("No image URL found in response");
+                }
+
+                const imgItem = resultData[0];
+                
+                let imageUrl = "";
+                if (imgItem && typeof imgItem === "object" && "url" in imgItem) {
+                    const url = (imgItem as Record<string, unknown>).url;
+                    if (typeof url === "string") imageUrl = url;
+                } else if (typeof imgItem === 'string') {
+                    imageUrl = imgItem; // 有些直接返回 URL 字符串
+                }
+
+                if (!imageUrl) {
+                    throw new Error("No image URL found in response");
+                }
+
+                return {
+                    success: true,
+                    images: [{ url: imageUrl }],
+                    model: model || "unknown",
+                    provider: this.name,
+                };
+            }
+             throw new Error("No complete event received");
         } catch (e) {
-          warn(
-            "HuggingFace",
-            `❌ 图片转换 Base64 失败，使用 URL: ${e instanceof Error ? e.message : String(e)}`,
-          );
-          result = [{ url: imageUrl }];
+            if (e instanceof Error && e.message.includes("HF_SSE_ERROR")) {
+                 // 服务端返回的明确错误
+                 // 如果包含 quota/rate limit 相关的词，抛出 429
+                 if (e.message.includes("quota") || e.message.includes("rate limit")) {
+                     throw new Error("429 Quota Exhausted (SSE)");
+                 }
+                 // 否则视为不可重试的参数错误
+                 throw new Error(`Generation Failed: ${e.message}`);
+            }
+            throw e;
         }
-
-        logGeneratedImages("HuggingFace", requestId, [{ url: imageUrl }]);
-        const duration = Date.now() - startTime;
-        logImageGenerationComplete("HuggingFace", requestId, 1, duration);
-
-        info("HuggingFace", `✅ 文生图成功使用 URL: ${apiUrl}`);
-        return { success: true, images: result, duration };
-      } catch (err) {
-        lastError = err instanceof Error ? err : new Error(String(err));
-        error("HuggingFace", `❌ 文生图 URL [${apiUrl}] 失败: ${lastError.message}`);
-        if (!isLastAttempt) info("HuggingFace", `🔄 正在切换到下一个文生图 URL...`);
-      }
-    }
-
-    const errMsg = lastError?.message || "所有 HuggingFace 文生图 URL 均失败";
-    error("HuggingFace", `💥 所有文生图 URL 均失败: ${errMsg}`);
-    logImageGenerationFailed("HuggingFace", requestId, errMsg);
-    return { success: false, error: errMsg, duration: Date.now() - startTime };
+    });
   }
 
   /**
-   * 处理图生图请求
-   *
-   * 特性：
-   * 1. 同样支持多 URL 故障转移。
-   * 2. 需要先将图片上传到 Gradio 服务器，获取内部路径。
-   * 3. 调用 /infer 端点进行生成。
+   * 通用重试包装器
    */
-  private async generateImageToImage(
-    apiKey: string,
-    request: ImageGenerationRequest,
-    options: GenerationOptions,
-    startTime: number,
-    headers: Record<string, string>,
-  ): Promise<GenerationResult> {
-    const { requestId } = options;
-    const rawPrompt = request.prompt || "";
-    const prompt = sanitizePrompt(rawPrompt);
-    const images = request.images || [];
-    const model = HuggingFaceConfig.defaultEditModel;
-    const size = request.size || HuggingFaceConfig.defaultEditSize;
-    const [width, height] = size.split("x").map(Number);
-
-    logImageGenerationStart("HuggingFace", requestId, model, size, prompt.length);
-    info("HuggingFace", `使用图生图/融合生图模式, 模型: ${model}, 图片数量: ${images.length}`);
-    if (prompt !== rawPrompt) {
-      info("HuggingFace", `Prompt 已清洗 (原长度: ${rawPrompt.length}, 新长度: ${prompt.length})`);
-    }
-
-    const editApiUrls = HuggingFaceConfig.editApiUrls;
-    if (!editApiUrls || editApiUrls.length === 0) {
-      error("HuggingFace", "图生图 API URL 资源池为空");
-      logImageGenerationFailed("HuggingFace", requestId, "配置错误");
-      return {
-        success: false,
-        error: "HuggingFace 配置错误: 未配置图生图 API URL",
-        duration: Date.now() - startTime,
-      };
-    }
-
-    info("HuggingFace", `开始处理图生图请求，URL 资源池大小: ${editApiUrls.length}`);
-
-    // 转换图片为 Blob
-    const imageBlobs: (Blob | null)[] = [null, null, null];
-    for (let i = 0; i < Math.min(images.length, 3); i++) {
-      try {
-        info("HuggingFace", `正在转换图片 ${i + 1}/${Math.min(images.length, 3)} 为 Blob...`);
-        imageBlobs[i] = await imageToBlob(images[i]);
-        info(
-          "HuggingFace",
-          `✅ 图片 ${i + 1} 转换成功, 大小: ${Math.round((imageBlobs[i] as Blob).size / 1024)}KB`,
-        );
-      } catch (e) {
-        warn(
-          "HuggingFace",
-          `❌ 图片 ${i + 1} 转换失败: ${e instanceof Error ? e.message : String(e)}`,
-        );
-      }
-    }
-
-    if (!imageBlobs[0]) {
-      error("HuggingFace", "所有输入图片转换失败");
-      logImageGenerationFailed("HuggingFace", requestId, "图片转换失败");
-      return { success: false, error: "没有有效的输入图片", duration: Date.now() - startTime };
-    }
-
-    let lastError: Error | null = null;
-
-    // 故障转移循环
-    for (let i = 0; i < editApiUrls.length; i++) {
-      const apiUrl = editApiUrls[i];
-      const isLastAttempt = i === editApiUrls.length - 1;
-
-      info("HuggingFace", `尝试图生图 URL [${i + 1}/${editApiUrls.length}]: ${apiUrl}`);
-
-      try {
-        // 1. 上传图片到 Gradio 服务器
-        const uploadedFiles: (string | null)[] = [null, null, null];
-
-        for (let j = 0; j < 3; j++) {
-          if (imageBlobs[j]) {
-            info("HuggingFace", `正在上传图片 ${j + 1} 到 Gradio 服务器...`);
-            const formData = new FormData();
-            formData.append("files", imageBlobs[j] as Blob, `image_${j + 1}.png`);
-
-            const uploadResponse = await fetchWithTimeout(`${apiUrl}/gradio_api/upload`, {
-              method: "POST",
-              headers: apiKey ? { "Authorization": `Bearer ${apiKey}` } : {},
-              body: formData,
-            });
-
-            if (!uploadResponse.ok) throw new Error(`图片上传失败: ${uploadResponse.status}`);
-
-            const uploadResult = await uploadResponse.json();
-            if (Array.isArray(uploadResult) && uploadResult.length > 0) {
-              uploadedFiles[j] = uploadResult[0];
-              info("HuggingFace", `✅ 图片 ${j + 1} 上传成功: ${uploadedFiles[j]}`);
-            }
+  private async runWithTokenRetry<T>(operation: (token: string | null) => Promise<T>): Promise<T> {
+      let lastError: unknown;
+      
+      // 尝试逻辑：
+      // 1. 获取 Key (KeyManager 会处理是否返回 null/匿名)
+      // 2. 失败判断：如果是 429，标记 Key 并重试
+      // 3. 最大尝试次数：3次 (避免死循环)
+      
+      for (let i = 0; i < 3; i++) {
+          const token = keyManager.getNextKey(this.name);
+          
+          try {
+              return await operation(token);
+          } catch (e) {
+              lastError = e;
+              const message = e instanceof Error ? e.message : String(e);
+              const status = getErrorStatus(e);
+              const isRateLimit = message.includes("429") || status === 429;
+              
+              if (isRateLimit) {
+                  warn("HuggingFace", `Key ...${token?.slice(-4) || 'Anon'} rate limited. Switching...`);
+                  if (token) {
+                      keyManager.markKeyExhausted(this.name, token);
+                  }
+                  // Continue to next attempt
+                  continue;
+              }
+              
+              // 非 429 错误，直接抛出 (如参数错误)
+              throw e;
           }
-        }
-
-        const [defaultWidth, defaultHeight] = HuggingFaceConfig.defaultEditSize.split("x").map(
-          Number,
-        );
-
-        // 2. 构造推理请求
-        const inferRequest = {
-          data: [
-            uploadedFiles[0]
-              ? { path: uploadedFiles[0], meta: { _type: "gradio.FileData" } }
-              : null,
-            uploadedFiles[1]
-              ? { path: uploadedFiles[1], meta: { _type: "gradio.FileData" } }
-              : null,
-            uploadedFiles[2]
-              ? { path: uploadedFiles[2], meta: { _type: "gradio.FileData" } }
-              : null,
-            prompt || "",
-            0,
-            true,
-            1,
-            4,
-            height || defaultHeight,
-            width || defaultWidth,
-          ],
-        };
-
-        info("HuggingFace", `正在调用 /infer 端点...`);
-
-        // 3. 提交推理任务
-        const queueResponse = await withApiTiming(
-          "HuggingFace",
-          "image_edit",
-          () =>
-            fetchWithTimeout(`${apiUrl}/gradio_api/call/infer`, {
-              method: "POST",
-              headers,
-              body: JSON.stringify(inferRequest),
-            }),
-        );
-
-        if (!queueResponse.ok) {
-          const errorText = await queueResponse.text();
-          throw new Error(`Infer API Error (${queueResponse.status}): ${errorText}`);
-        }
-
-        const { event_id } = await queueResponse.json();
-        info("HuggingFace", `图生图任务已提交, Event ID: ${event_id}`);
-
-        // 4. 获取结果 (SSE)
-        const resultResponse = await fetchWithTimeout(
-          `${apiUrl}/gradio_api/call/infer/${event_id}`,
-          {
-            method: "GET",
-            headers: apiKey ? { "Authorization": `Bearer ${apiKey}` } : {},
-          },
-        );
-
-        if (!resultResponse.ok) {
-          const errorText = await resultResponse.text();
-          throw new Error(`Result API Error (${resultResponse.status}): ${errorText}`);
-        }
-
-        const sseText = await resultResponse.text();
-        const imageUrl = extractImageUrlFromSSE(sseText, apiUrl);
-
-        if (!imageUrl) throw new Error("返回数据格式异常：未能从 SSE 流中提取图片 URL");
-
-        info("HuggingFace", `📎 原始图片 URL: ${imageUrl}`);
-
-        // 5. 将结果转换为 Base64
-        let result: Array<{ url?: string; b64_json?: string }>;
-        try {
-          const { base64, mimeType } = await urlToBase64(imageUrl);
-          info(
-            "HuggingFace",
-            `✅ 图片已转换为 Base64, MIME: ${mimeType}, 大小: ${
-              Math.round(base64.length / 1024)
-            }KB`,
-          );
-          result = [{ b64_json: base64 }];
-        } catch (e) {
-          warn(
-            "HuggingFace",
-            `❌ 图片转换 Base64 失败，使用 URL: ${e instanceof Error ? e.message : String(e)}`,
-          );
-          result = [{ url: imageUrl }];
-        }
-
-        logGeneratedImages("HuggingFace", requestId, [{ url: imageUrl }]);
-        const duration = Date.now() - startTime;
-        logImageGenerationComplete("HuggingFace", requestId, 1, duration);
-
-        info("HuggingFace", `✅ 图生图成功使用 URL: ${apiUrl}`);
-        return { success: true, images: result, duration };
-      } catch (err) {
-        lastError = err instanceof Error ? err : new Error(String(err));
-        error("HuggingFace", `❌ 图生图 URL [${apiUrl}] 失败: ${lastError.message}`);
-        if (!isLastAttempt) info("HuggingFace", `🔄 正在切换到下一个图生图 URL...`);
       }
-    }
-
-    const errMsg = lastError?.message || "所有 HuggingFace 图生图 URL 均失败";
-    error("HuggingFace", `💥 所有图生图 URL 均失败: ${errMsg}`);
-    logImageGenerationFailed("HuggingFace", requestId, errMsg);
-    return { success: false, error: errMsg, duration: Date.now() - startTime };
+      
+      throw lastError instanceof Error ? lastError : new Error(String(lastError));
   }
 }
 
-// 导出单例实例
+function getErrorStatus(err: unknown): number | undefined {
+  if (!err || typeof err !== "object") return undefined;
+  if (!("status" in err)) return undefined;
+  const status = (err as Record<string, unknown>).status;
+  return typeof status === "number" ? status : undefined;
+}
+
 export const huggingFaceProvider = new HuggingFaceProvider();

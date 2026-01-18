@@ -20,6 +20,7 @@ import {
   getKeyPool,
   getRuntimeConfig,
   replaceRuntimeConfig,
+  type ProviderTaskDefaults,
   type RuntimeConfig,
   type RuntimeProviderConfig,
   setProviderEnabled,
@@ -28,7 +29,13 @@ import {
   updateKeyPool,
 } from "./config/manager.ts";
 import { providerRegistry } from "./providers/registry.ts";
+console.log("Loading app.ts...");
+import { aiChatService } from "./core/ai-chat.ts";
 import type { ProviderName } from "./providers/base.ts";
+
+// 调试日志：确保 aiChatService 已加载
+console.log("[App] aiChatService loaded:", !!aiChatService);
+
 import denoConfig from "../deno.json" with { type: "json" };
 
 function isProviderName(name: string): name is ProviderName {
@@ -147,7 +154,7 @@ async function routeRequest(req: Request, ctx: RequestContext): Promise<Response
 
   // 静态页面（SPA 路由）
   // 所有前端路由都返回 index.html，由前端 Router 处理页面显示
-  const spaRoutes = ["/admin", "/setting", "/channel", "/keys", "/index", "/ui", "/", "/update"];
+  const spaRoutes = ["/admin", "/setting", "/channel", "/keys", "/index", "/ui", "/", "/update", "/ai-chat"];
   const spaPath = (pathname.length > 1 && pathname.endsWith("/"))
     ? pathname.slice(0, -1)
     : pathname;
@@ -205,7 +212,7 @@ async function routeRequest(req: Request, ctx: RequestContext): Promise<Response
   // 统一鉴权
   // 排除不需要鉴权的路径：/health, /admin, /index, /ui, /css/*, /js/*, /
   // 仅对 OpenAI 兼容的 API 接口进行鉴权
-  if (pathname.startsWith("/v1/")) {
+  if (pathname.startsWith("/v1/") && pathname !== "/v1/models") {
     const apiKey = req.headers.get("Authorization")?.replace("Bearer ", "").trim() || "";
     // 如果既不是全局 Access Key，也不是已知的 Provider Key，则拒绝访问
     if (!checkAuth(req) && !providerRegistry.isRecognizedApiKey(apiKey)) {
@@ -377,6 +384,45 @@ async function routeRequest(req: Request, ctx: RequestContext): Promise<Response
             headers: { "Content-Type": "application/json" },
           },
         );
+      }
+      return handleMethodNotAllowed(method);
+
+    // OpenAI 兼容 API: 获取模型列表
+    case "/v1/models":
+      if (method === "GET") {
+        // 聚合所有已启用 Provider 的模型
+        const allModels = new Set<string>();
+
+        // 添加文本模型
+        Config.ALL_TEXT_MODELS.forEach((m) => allModels.add(m));
+
+        const names = providerRegistry.getNames();
+        
+        for (const name of names) {
+          if (!providerRegistry.has(name)) continue;
+          const provider = providerRegistry.get(name);
+          if (provider) {
+             const models = provider.getSupportedModels();
+             models.forEach(m => allModels.add(m));
+          }
+        }
+
+        const modelList = Array.from(allModels).map(id => ({
+          id,
+          object: "model",
+          created: Math.floor(Date.now() / 1000),
+          owned_by: "img-router"
+        }));
+
+        return new Response(JSON.stringify({
+          object: "list",
+          data: modelList
+        }), {
+          headers: { 
+            "Content-Type": "application/json",
+            ...corsHeaders
+          },
+        });
       }
       return handleMethodNotAllowed(method);
 
@@ -707,7 +753,7 @@ async function routeRequest(req: Request, ctx: RequestContext): Promise<Response
           });
         }
 
-        await setProviderTaskDefaults(provider as ProviderName, task, {
+        const taskDefaults: ProviderTaskDefaults = {
           model: ("model" in defaults ? defaults.model : undefined) as string | null | undefined,
           size: ("size" in defaults ? defaults.size : undefined) as string | null | undefined,
           quality: ("quality" in defaults ? defaults.quality : undefined) as
@@ -715,13 +761,195 @@ async function routeRequest(req: Request, ctx: RequestContext): Promise<Response
             | null
             | undefined,
           n: ("n" in defaults ? defaults.n : undefined) as number | null | undefined,
-        });
+          steps: ("steps" in defaults ? defaults.steps : undefined) as number | null | undefined,
+          weight: ("weight" in defaults ? defaults.weight : undefined) as number | undefined,
+        };
+
+        const aiChat = defaults.aiChat;
+        if (isRecord(aiChat)) {
+          taskDefaults.aiChat = {
+            translate: typeof aiChat.translate === "boolean" ? aiChat.translate : undefined,
+            expand: typeof aiChat.expand === "boolean" ? aiChat.expand : undefined,
+          };
+        }
+
+        await setProviderTaskDefaults(provider as ProviderName, task, taskDefaults);
 
         return new Response(JSON.stringify({ ok: true, runtimeConfig: getRuntimeConfig() }), {
           headers: { "Content-Type": "application/json" },
         });
       }
       return handleMethodNotAllowed(method);
+
+    // 管理 API: AI 聊天服务配置
+    case "/api/config/ai-chat":
+      if (method === "GET") {
+        const config = Config.getAiChatConfig();
+        console.log("[API] GET /api/config/ai-chat", config);
+        // 直接返回配置，不再脱敏 API Key，以便前端明文显示
+        return new Response(JSON.stringify(config || {}), {
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+
+      if (method === "POST") {
+        let body: unknown;
+        try {
+          body = await req.json();
+        } catch {
+          return new Response(JSON.stringify({ error: "Invalid JSON" }), {
+            status: 400,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+
+        if (!isRecord(body)) {
+          return new Response(JSON.stringify({ error: "Invalid body" }), {
+            status: 400,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+
+        const current = Config.getAiChatConfig();
+
+        const nextBaseUrl = typeof body.baseUrl === "string" ? body.baseUrl : (current?.baseUrl ?? "");
+        const nextModel = typeof body.model === "string" ? body.model : (current?.model ?? "gpt-3.5-turbo");
+
+        let nextApiKey: string = current?.apiKey ?? "";
+        // 移除脱敏判断，始终更新 apiKey
+        if (typeof body.apiKey === "string") {
+          nextApiKey = body.apiKey;
+        }
+
+        const nextEnableTranslate = typeof body.enableTranslate === "boolean"
+          ? body.enableTranslate
+          : current?.enableTranslate;
+        const nextEnableExpand = typeof body.enableExpand === "boolean" ? body.enableExpand : current?.enableExpand;
+        const nextTranslatePrompt = typeof body.translatePrompt === "string"
+          ? body.translatePrompt
+          : current?.translatePrompt;
+        const nextExpandPrompt = typeof body.expandPrompt === "string" ? body.expandPrompt : current?.expandPrompt;
+
+        Config.updateAiChatConfig({
+          baseUrl: nextBaseUrl,
+          apiKey: nextApiKey,
+          model: nextModel,
+          enableTranslate: nextEnableTranslate,
+          enableExpand: nextEnableExpand,
+          translatePrompt: nextTranslatePrompt,
+          expandPrompt: nextExpandPrompt,
+        });
+
+        return new Response(JSON.stringify({ ok: true }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+
+      return handleMethodNotAllowed(method);
+
+    // 工具 API: 获取模型列表
+    case "/api/tools/fetch-models":
+      if (method === "POST") {
+        try {
+          const body = await req.json();
+          
+          // Debug logs to verify inputs
+          console.log("[API] fetch-models request:", { 
+            baseUrl: body.baseUrl, 
+            apiKey: body.apiKey ? (body.apiKey.substring(0, 8) + "...") : "empty" 
+          });
+
+          if (!isRecord(body) || typeof body.baseUrl !== "string") {
+            return new Response(JSON.stringify({ error: "Missing or invalid baseUrl" }), {
+              status: 400,
+              headers: { "Content-Type": "application/json" },
+            });
+          }
+
+          if (!aiChatService) {
+            throw new Error("aiChatService is not initialized");
+          }
+
+          const models = await aiChatService.fetchModels({
+            baseUrl: body.baseUrl,
+            apiKey: typeof body.apiKey === "string" ? body.apiKey : "",
+          });
+
+          return new Response(JSON.stringify({ ok: true, models }), {
+            headers: { "Content-Type": "application/json" },
+          });
+        } catch (e) {
+          console.error("[API] Fetch models failed:", e);
+          return new Response(JSON.stringify({ ok: false, error: e instanceof Error ? e.message : String(e) }), {
+            status: 500,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+      }
+      return handleMethodNotAllowed(method);
+
+    // 工具 API: 测试 AI Chat 连接
+    case "/api/tools/test-ai-chat":
+      if (method === "POST") {
+        try {
+          const body = await req.json();
+          // 如果是脱敏的 key，尝试从配置中获取真实的 key
+          if (body.apiKey === "******") {
+            const current = Config.getAiChatConfig();
+            if (current?.apiKey) {
+              body.apiKey = current.apiKey;
+            }
+          }
+
+          if (!body.baseUrl || !body.apiKey) {
+             return new Response(JSON.stringify({ error: "Missing parameters" }), {
+              status: 400,
+              headers: { "Content-Type": "application/json" },
+            });
+          }
+
+          if (!aiChatService) {
+             throw new Error("aiChatService is not initialized");
+          }
+
+          const result = await aiChatService.testConnection({
+            baseUrl: body.baseUrl,
+            apiKey: body.apiKey,
+            model: body.model || "gpt-3.5-turbo",
+          });
+
+          return new Response(JSON.stringify({ ok: true, message: result }), {
+            headers: { "Content-Type": "application/json" },
+          });
+        } catch (e) {
+          return new Response(JSON.stringify({ ok: false, error: e instanceof Error ? e.message : String(e) }), {
+            status: 500,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+      }
+      return handleMethodNotAllowed(method);
+
+
+    // 管理 API: HF 模型映射配置
+    case "/api/config/hf-map":
+        if (method === "POST") {
+            try {
+                const body = await req.json(); // Expected: Record<string, { main: string, backup?: string }>
+                if (typeof body !== 'object') {
+                    return new Response(JSON.stringify({ error: "Invalid body" }), { status: 400 });
+                }
+                Config.updateHfModelMap(body);
+                return new Response(JSON.stringify({ ok: true }), { status: 200 });
+            } catch {
+                return new Response(JSON.stringify({ error: "Invalid JSON" }), { status: 400 });
+            }
+        }
+        if (method === "GET") {
+            return new Response(JSON.stringify(Config.getHfModelMap()), { status: 200 });
+        }
+        return handleMethodNotAllowed(method);
+
     default:
       return handleNotFound();
   }

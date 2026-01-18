@@ -12,6 +12,7 @@
 
 import {
   getNextAvailableKey,
+  getProviderTaskDefaults,
   getSystemConfig,
   reportKeyError,
   reportKeySuccess,
@@ -138,6 +139,12 @@ export async function handleImagesBlend(req: Request): Promise<Response> {
 
     if (!provider) {
       throw new Error("内部错误: Provider 未定义");
+    }
+
+    // Inject defaults
+    const defaults = getProviderTaskDefaults(provider.name, "blend");
+    if (requestBody.steps === undefined && defaults.steps) {
+        requestBody.steps = defaults.steps;
     }
 
     const desiredFormat = requestBody.response_format || "url";

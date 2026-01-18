@@ -421,7 +421,7 @@ input:checked + .slider:before {
 #main-container {
   flex: 1;
   overflow-y: auto;
-  padding-right: 4px; /* Space for scrollbar */
+  /* padding-right: 4px; Remove custom padding that might look like a track */
 }
 
 /* Dashboard specific layout */
@@ -487,6 +487,7 @@ input:checked + .slider:before {
   scroll-behavior: smooth;
 }
 
+/* 
 .log-content::-webkit-scrollbar {
   width: 8px;
 }
@@ -499,6 +500,7 @@ input:checked + .slider:before {
   background: #45475a;
   border-radius: 4px;
 }
+*/
 
 .log-entry {
   display: flex;

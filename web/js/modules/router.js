@@ -21,6 +21,13 @@ const routes = {
   "/setting": { title: "系统设置", render: renderSetting },
   "/channel": { title: "渠道设置", render: renderChannel },
   "/keys": { title: "后端Key池", render: renderKeys },
+  "/ai-chat": {
+    title: "AI 助手 (AiChat)",
+    render: async (container) => {
+      const { renderAiChat } = await import("./ai_chat.js");
+      await renderAiChat(container);
+    },
+  },
   "/update": { title: "检查更新", render: renderUpdate },
 };
 

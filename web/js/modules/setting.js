@@ -138,6 +138,31 @@ export async function renderSetting(container) {
                 </div>
             </div>
         </div>
+
+        <div class="card">
+            <div class="card-header">
+                <h3 class="card-title">智能增强 (AiChat)</h3>
+            </div>
+            <div class="form-section" style="padding: 16px;">
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px;">
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <label class="form-label">API Base URL</label>
+                        <input type="text" id="aiChatBaseUrl" class="form-control" placeholder="https://api.openai.com/v1">
+                    </div>
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <label class="form-label">Model</label>
+                        <input type="text" id="aiChatModel" class="form-control" placeholder="gpt-3.5-turbo">
+                    </div>
+                </div>
+                <div class="form-group" style="margin-bottom: 0;">
+                    <label class="form-label">API Key</label>
+                    <input type="password" id="aiChatApiKey" class="form-control" placeholder="sk-...">
+                </div>
+                <div class="help-text" style="font-size: 12px; color: var(--text-secondary); margin-top: 8px;">
+                    配置兼容 OpenAI 格式的 LLM 服务，用于 Prompt 翻译、优化和扩充。
+                </div>
+            </div>
+        </div>
         
         <style>
             .switch-group-inline {
@@ -227,6 +252,21 @@ async function loadSystemSettings() {
     // 图片压缩设置 (从 runtimeConfig 读取)
     document.getElementById("compressThreshold").value = runtimeSystem.compressThreshold || 5;
     document.getElementById("compressTarget").value = runtimeSystem.compressTarget || 2;
+
+    // 加载 AiChat 配置
+    try {
+        const resChat = await apiFetch("/api/config/ai-chat");
+        if (resChat.ok) {
+            const chatConfig = await resChat.json();
+            if (chatConfig) {
+                document.getElementById("aiChatBaseUrl").value = chatConfig.baseUrl || "";
+                document.getElementById("aiChatApiKey").value = chatConfig.apiKey || ""; // Will be ******
+                document.getElementById("aiChatModel").value = chatConfig.model || "";
+            }
+        }
+    } catch (e) {
+        console.error("Failed to load AiChat settings:", e);
+    }
   } catch (e) {
     console.error("Failed to load settings:", e);
   }
@@ -278,6 +318,20 @@ async function saveSystemSettings() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ system: systemConfig }),
     });
+
+    // 保存 AiChat 配置
+    const aiChatBaseUrl = document.getElementById("aiChatBaseUrl").value;
+    if (aiChatBaseUrl) {
+        await apiFetch("/api/config/ai-chat", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                baseUrl: aiChatBaseUrl,
+                apiKey: document.getElementById("aiChatApiKey").value,
+                model: document.getElementById("aiChatModel").value
+            }),
+        });
+    }
 
     if (statusDot) {
       statusDot.style.background = "var(--success)";

@@ -175,6 +175,15 @@ class ProviderRegistry {
   }
 
   /**
+   * 获取所有已启用的 Provider 实例
+   */
+  getAll(): IProvider[] {
+    return Array.from(this.registrations.values())
+      .filter(reg => reg.enabled)
+      .map(reg => reg.instance);
+  }
+
+  /**
    * 获取所有已启用 Provider 的配置信息
    *
    * @returns {ProviderConfig[]} 配置数组

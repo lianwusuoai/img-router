@@ -3,22 +3,15 @@
  *
  * 处理 /v1/images/generations 端点（文生图）。
  *
- * 功能特性：
- * - **自动路由**：根据 Authorization Header 中的 API Key 自动路由到对应的 Provider。
- * - **双模式支持**：支持中转模式 (Relay) 和后端模式 (Backend)。
- * - **后端模式增强**：在后端模式下，支持自动从密钥池分配 Key，并具备错误重试机制。
- * - **格式兼容**：返回 OpenAI Images API 兼容的响应格式。
- *
- * 兼容策略：
- * - 如果请求 response_format="b64_json"：尽量返回 b64_json（必要时从 url 下载转 Base64）。
- * - 如果请求 response_format="url" 或未指定：优先返回 url；若只有 b64_json，则返回 data URI 作为 url（多数客户端可直接渲染）。
+ * V4 升级特性：
+ * - **权重级联路由**：基于权重的 Provider 优先级调度与故障转移。
+ * - **智能增强**：集成 Prompt 翻译与扩充。
+ * - **Key 池管理**：直连模式下自动轮询 Key。
  */
 
 import {
-  getNextAvailableKey,
+  getProviderTaskDefaults,
   getSystemConfig,
-  reportKeyError,
-  reportKeySuccess,
 } from "../config/manager.ts";
 import type { IProvider } from "../providers/base.ts";
 import type {
@@ -31,24 +24,12 @@ import type {
 import { providerRegistry } from "../providers/registry.ts";
 import { buildDataUri, urlToBase64 } from "../utils/image.ts";
 import { debug, error, generateRequestId, info, logRequestEnd, warn } from "../core/logger.ts";
+import { weightedRouter } from "../core/router.ts";
+import { aiChatService } from "../core/ai-chat.ts";
+import { keyManager } from "../core/key-manager.ts";
 
 /**
  * 处理 /v1/images/generations 端点
- *
- * 核心流程：
- * 1. **鉴权与路由**：根据 Key 格式判断是中转模式还是后端模式。
- * 2. **后端模式逻辑**：
- *    - 验证 Global Key。
- *    - 根据 Model 选择 Provider。
- *    - 从密钥池获取可用 Key。
- * 3. **请求校验**：检查参数有效性。
- * 4. **执行生成（带重试）**：
- *    - 后端模式下，如果遇到速率限制或鉴权错误，会自动换 Key 重试。
- *    - 中转模式不重试。
- * 5. **响应构建**：格式化输出，处理 `response_format` 转换。
- *
- * @param req - HTTP 请求对象
- * @returns HTTP 响应对象
  */
 export async function handleImagesGenerations(req: Request): Promise<Response> {
   const url = new URL(req.url);
@@ -56,61 +37,40 @@ export async function handleImagesGenerations(req: Request): Promise<Response> {
   const systemConfig = getSystemConfig();
   const modes = systemConfig.modes || { relay: true, backend: false };
 
-  // 0. 检查系统是否完全关闭（双关模式）
+  // 0. 检查系统是否完全关闭
   if (!modes.relay && !modes.backend) {
-    warn("HTTP", "系统服务未启动：中转模式和后端模式均已关闭");
-    // logRequestEnd 由 middleware 统一记录
     return new Response(
       JSON.stringify({ error: "服务未启动：请开启中转模式或后端模式" }),
-      {
-        status: 503,
-        headers: { "Content-Type": "application/json; charset=utf-8" },
-      },
+      { status: 503, headers: { "Content-Type": "application/json" } },
     );
   }
 
-  // logRequestStart(req, requestId);
-
   const authHeader = req.headers.get("Authorization");
-  let apiKey = authHeader?.replace("Bearer ", "").trim() || "";
+  const apiKey = authHeader?.replace("Bearer ", "").trim() || "";
 
-  // 1. 尝试检测 Provider (基于 Key 格式)
-  let provider: IProvider | undefined = providerRegistry.detectProvider(apiKey);
+  // 1. 尝试检测 Provider (基于 Key 格式) - Relay Mode
+  const detectedProvider: IProvider | undefined = providerRegistry.detectProvider(apiKey);
   let usingBackendMode = false;
 
-  // 2. 路由逻辑
-  if (provider) {
-    // Case A: 识别到 Provider Key
+  if (detectedProvider) {
     if (!modes.relay) {
-      warn("HTTP", "中转模式已禁用，拒绝外部 Provider Key");
-      // logRequestEnd 由 middleware 统一记录
       return new Response(JSON.stringify({ error: "Relay mode is disabled" }), {
         status: 403,
         headers: { "Content-Type": "application/json" },
       });
     }
-    // 继续使用该 Provider 和 Key
+    info("HTTP", `Relay Mode: Detected provider ${detectedProvider.name}`);
   } else {
-    // Case B: 未识别到 Key (可能是空，可能是系统 Key，可能是无效 Key)
-    // 尝试后端模式
     if (modes.backend) {
-      // 验证是否允许访问后端模式
-      // 如果设置了 Global Key，必须匹配
       if (systemConfig.globalAccessKey && apiKey !== systemConfig.globalAccessKey) {
-        warn("HTTP", "鉴权失败: 非有效 Provider Key 且不匹配 Global Key");
-        // logRequestEnd 由 middleware 统一记录
         return new Response(JSON.stringify({ error: "Unauthorized" }), {
           status: 401,
           headers: { "Content-Type": "application/json" },
         });
       }
-
       usingBackendMode = true;
-      // 后续需要从 Body 解析 Model 来确定 Provider
+      // info("HTTP", "Backend Mode: Using Weighted Router");
     } else {
-      // 后端模式关闭，且 Key 无效
-      warn("HTTP", "无法识别 Key 且后端模式未开启");
-      // logRequestEnd 由 middleware 统一记录
       return new Response(JSON.stringify({ error: "Invalid API Key" }), {
         status: 401,
         headers: { "Content-Type": "application/json" },
@@ -118,188 +78,122 @@ export async function handleImagesGenerations(req: Request): Promise<Response> {
     }
   }
 
-  if (!usingBackendMode && provider) {
-    info("HTTP", `路由到 ${provider.name} (Relay Mode)`);
-  }
-
   const startTime = Date.now();
 
   try {
     const requestBody: ImagesRequest = await req.json();
+    debug("HTTP", `Request Body: ${JSON.stringify(requestBody, null, 2)}`);
 
-    // 调试日志：打印完整的请求体，排查参数丢失问题
-    debug(
-      "HTTP",
-      `收到生图请求 Body: ${JSON.stringify(requestBody, null, 2)}`,
-    );
-
-    // 如果是后端模式，现在需要确定 Provider 和 Key
+    // 2. 确定 Provider 执行计划
+    let providerPlan: IProvider[] = [];
     if (usingBackendMode) {
-      if (!requestBody.model) {
-        warn("HTTP", "后端模式下请求缺失 model 参数");
-        logRequestEnd(requestId, req.method, url.pathname, 400, 0, "missing model");
-        return new Response(
-          JSON.stringify({ error: "Missing 'model' parameter in backend mode" }),
-          {
-            status: 400,
-            headers: { "Content-Type": "application/json" },
-          },
-        );
-      }
-      provider = providerRegistry.getProviderByModel(requestBody.model);
-      if (!provider) {
-        warn("HTTP", `后端模式下请求了不支持的模型: ${requestBody.model}`);
-        logRequestEnd(requestId, req.method, url.pathname, 400, 0, "unsupported model");
-        return new Response(JSON.stringify({ error: `Unsupported model: ${requestBody.model}` }), {
-          status: 400,
-          headers: { "Content-Type": "application/json" },
-        });
-      }
-
-      info("HTTP", `路由到 ${provider.name} (Backend Mode)`);
-    }
-
-    if (!provider) {
-      throw new Error("内部错误: Provider 未定义");
-    }
-
-    const prompt = requestBody.prompt || "";
-    const desiredFormat = requestBody.response_format || "url";
-
-    debug(
-      "Router",
-      `Images API Prompt: ${prompt.substring(0, 80)}... (完整长度: ${prompt.length})`,
-    );
-
-    const {
-      prompt: _ignoredPrompt,
-      model: _ignoredModel,
-      size: _ignoredSize,
-      n: _ignoredN,
-      response_format: _ignoredResponseFormat,
-      stream: _ignoredStream,
-      ...extraParams
-    } = requestBody;
-
-    const generationRequest: ImageGenerationRequest = {
-      ...extraParams,
-      prompt,
-      images: [],
-      model: requestBody.model,
-      size: requestBody.size,
-      n: requestBody.n,
-      response_format: desiredFormat,
-      stream: requestBody.stream,
-    };
-
-    const validationError = provider.validateRequest(generationRequest);
-    if (validationError) {
-      warn("HTTP", `请求参数无效: ${validationError}`);
-      logRequestEnd(
-        requestId,
-        req.method,
-        url.pathname,
-        400,
-        Date.now() - startTime,
-        validationError,
-      );
-      return new Response(JSON.stringify({ error: validationError }), {
-        status: 400,
-        headers: { "Content-Type": "application/json" },
-      });
-    }
-
-    // 重试循环 (仅限后端模式)
-    let attempts = 0;
-    const maxAttempts = usingBackendMode ? 3 : 1;
-    let lastError: string | null = null;
-    let successResult: GenerationResult | null = null;
-
-    while (attempts < maxAttempts) {
-      attempts++;
-
-      // 后端模式：每次尝试都重新获取一个 Key (如果是重试)
-      if (usingBackendMode) {
-        const poolKey = getNextAvailableKey(provider.name);
-        if (!poolKey) {
-          if (attempts === 1) {
-            warn("HTTP", `Provider ${provider.name} 账号池耗尽`);
-            logRequestEnd(requestId, req.method, url.pathname, 503, 0, "key pool exhausted");
-            return new Response(
-              JSON.stringify({ error: `No available API keys for provider: ${provider.name}` }),
-              {
+        // Backend Mode: 使用权重路由
+        providerPlan = weightedRouter.getPlan("text", requestBody.model);
+        if (providerPlan.length === 0) {
+            return new Response(JSON.stringify({ error: "No available providers for text-to-image" }), {
                 status: 503,
                 headers: { "Content-Type": "application/json" },
-              },
-            );
-          } else {
-            // 重试时耗尽了 Key，退出循环
-            warn("Router", `重试期间 Key 耗尽`);
-            break;
-          }
+            });
         }
-        apiKey = poolKey;
-        info(
-          "Router",
-          `后端模式: 为 ${provider.name} 分配了 Key (ID: ...${
-            apiKey.slice(-4)
-          }) (尝试 ${attempts}/${maxAttempts})`,
-        );
-      }
-
-      const generationResult = await provider.generate(apiKey, generationRequest, { requestId });
-
-      if (generationResult.success) {
-        successResult = generationResult;
-        if (usingBackendMode) {
-          reportKeySuccess(provider.name, apiKey);
+        info("Router", `Plan: ${providerPlan.map(p => p.name).join(" -> ")}`);
+    } else {
+        // Relay Mode: 仅使用检测到的 Provider
+        if (detectedProvider) {
+            providerPlan = [detectedProvider];
         }
-        break;
-      } else {
-        lastError = generationResult.error || "Unknown error";
+    }
 
-        if (usingBackendMode) {
-          // 简单的关键词匹配，实际应根据 Provider 返回的错误码判断
-          const isRateLimit = lastError.includes("429") || lastError.includes("rate limit") ||
-            lastError.includes("速率限制");
-          const isAuthError = lastError.includes("401") || lastError.includes("403") ||
-            lastError.includes("API Key") || lastError.includes("Unauthorized");
+    if (providerPlan.length === 0) {
+        throw new Error("Internal Error: No provider plan generated");
+    }
 
-          if (isRateLimit) {
-            warn("Router", `Key ...${apiKey.slice(-4)} 触发速率限制，标记并重试...`);
-            reportKeyError(provider.name, apiKey, "rate_limit");
-          } else if (isAuthError) {
-            warn("Router", `Key ...${apiKey.slice(-4)} 鉴权失败，标记并重试...`);
-            reportKeyError(provider.name, apiKey, "auth_error");
-          } else {
-            // 其他错误也记录，避免坏节点一直被使用
-            reportKeyError(provider.name, apiKey, "other");
-            // 如果不是 429/401，也许不应该重试？为了稳健性，如果是 5xx 也可以重试。
-            // 这里我们继续重试，直到次数耗尽
-          }
-        } else {
-          // 中转模式不重试
-          break;
+    // 3. 执行计划 (级联故障转移)
+    let successResult: GenerationResult | null = null;
+    let lastError: unknown = null;
+
+    // 原始 Prompt (用于 Intelligence 处理)
+    const originalPrompt = requestBody.prompt || "";
+    
+    // 遍历计划中的 Provider
+    for (const provider of providerPlan) {
+        try {
+            info("Router", `Attempting provider: ${provider.name}`);
+
+            // 3.1 AI 聊天增强 (AiChat Middleware)
+            // 获取该 Provider 的 AI 聊天配置
+            const defaults = getProviderTaskDefaults(provider.name, "text");
+            const aiChatConfig = defaults.aiChat || {};
+            
+            // 处理 Prompt
+            const processedPrompt = await aiChatService.processPrompt(originalPrompt, {
+                translate: aiChatConfig.translate,
+                expand: aiChatConfig.expand
+            });
+
+            if (processedPrompt !== originalPrompt) {
+                debug("AiChat", `Prompt optimized: ${processedPrompt.substring(0, 50)}...`);
+            }
+
+            // 3.2 准备请求对象
+            const generationRequest: ImageGenerationRequest = {
+                ...requestBody,
+                prompt: processedPrompt,
+                images: [],
+                model: requestBody.model, 
+                // 从 Task Defaults 中补全 steps (如果请求中未包含)
+                steps: requestBody.steps || defaults.steps || undefined,
+            };
+
+            // 3.3 获取 Key
+            let currentApiKey = apiKey; // Relay Mode 默认使用用户传入的 Key
+            
+            if (usingBackendMode) {
+                // Backend Mode: 从 KeyManager 获取
+                // 对于 HF，KeyManager 已经在 Provider 内部集成，传空字符串即可
+                // 对于其他 Provider (如 Gitee)，仍需获取
+                if (provider.name === "HuggingFace") {
+                    currentApiKey = ""; // HF 内部处理
+                } else {
+                    const token = keyManager.getNextKey(provider.name);
+                    if (!token) {
+                        warn("Router", `Provider ${provider.name} has no available keys, skipping...`);
+                        lastError = new Error("No keys available");
+                        continue; // 尝试下一个 Provider
+                    }
+                    currentApiKey = token;
+                }
+            }
+
+            // 3.4 执行生成
+            const result = await provider.generate(currentApiKey, generationRequest, { requestId });
+            
+            if (result.success) {
+                successResult = result;
+                // 成功，跳出循环
+                break;
+            } else {
+                lastError = new Error(result.error || "Unknown error");
+                warn("Router", `Provider ${provider.name} failed: ${result.error}`);
+                // 继续下一个 Provider
+            }
+
+        } catch (e) {
+            const message = e instanceof Error ? e.message : String(e);
+            warn("Router", `Provider ${provider.name} exception: ${message}`);
+            lastError = e;
+            // 继续下一个 Provider
         }
-      }
     }
 
     if (!successResult) {
-      throw new Error(lastError || "图片生成失败");
+        throw lastError || new Error("All providers failed");
     }
 
-    const generationResult = successResult;
+    const generationResult = successResult!;
 
-    // 处理流式响应
+    // 4. 响应构建 (保持原有逻辑)
     if (generationResult.stream) {
-      logRequestEnd(
-        requestId,
-        req.method,
-        url.pathname,
-        200,
-        Date.now() - startTime,
-        "stream",
-      );
+      logRequestEnd(requestId, req.method, url.pathname, 200, Date.now() - startTime, "stream");
       return new Response(generationResult.stream, {
         headers: {
           "Content-Type": "text/event-stream",
@@ -310,38 +204,29 @@ export async function handleImagesGenerations(req: Request): Promise<Response> {
     }
 
     const images: ImageData[] = generationResult.images || [];
-
+    const desiredFormat = requestBody.response_format || "url";
     const data: ImageData[] = [];
-    for (const img of images) {
-      if (desiredFormat === "b64_json") {
-        if (img.b64_json) {
-          data.push({ b64_json: img.b64_json });
-          continue;
-        }
-        if (img.url) {
-          try {
-            const { base64 } = await urlToBase64(img.url);
-            data.push({ b64_json: base64 });
-          } catch (e) {
-            const msg = e instanceof Error ? e.message : String(e);
-            warn("HTTP", `URL 转 Base64 失败，回退到 URL: ${msg}`);
-            data.push({ url: img.url });
-          }
-          continue;
-        }
-        continue;
-      }
 
-      // desiredFormat === "url"（或默认）
-      if (img.url) {
-        data.push({ url: img.url });
-        continue;
-      }
-      if (img.b64_json) {
-        // 兼容旧实现：将 Base64 作为 data URI 放入 url 字段，便于客户端直接渲染
-        data.push({ url: buildDataUri(img.b64_json, "image/png") });
-        continue;
-      }
+    for (const img of images) {
+        // ... (保持原有的格式转换逻辑)
+        if (desiredFormat === "b64_json") {
+            if (img.b64_json) {
+                data.push({ b64_json: img.b64_json });
+            } else if (img.url) {
+                try {
+                    const { base64 } = await urlToBase64(img.url);
+                    data.push({ b64_json: base64 });
+                } catch (_e) {
+                    data.push({ url: img.url });
+                }
+            }
+        } else {
+             if (img.url) {
+                data.push({ url: img.url });
+            } else if (img.b64_json) {
+                data.push({ url: buildDataUri(img.b64_json, "image/png") });
+            }
+        }
     }
 
     const responseBody: ImagesResponse = {
@@ -358,21 +243,14 @@ export async function handleImagesGenerations(req: Request): Promise<Response> {
         "Access-Control-Allow-Origin": "*",
       },
     });
+
   } catch (err) {
-    const errorMessage = err instanceof Error ? err.message : "Internal Server Error";
-    const errorProvider = provider?.name || "Unknown";
-
-    error("Proxy", `请求处理错误 (${errorProvider}): ${errorMessage}`);
+    const errorMessage = err instanceof Error ? err.message : String(err);
+    error("Proxy", `请求处理错误: ${errorMessage}`);
     logRequestEnd(requestId, req.method, url.pathname, 500, Date.now() - startTime, errorMessage);
-
-    return new Response(
-      JSON.stringify({
-        error: { message: errorMessage, type: "server_error", provider: errorProvider },
-      }),
-      {
-        status: 500,
-        headers: { "Content-Type": "application/json" },
-      },
-    );
+    return new Response(JSON.stringify({ error: { message: errorMessage, type: "server_error" } }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" },
+    });
   }
 }
