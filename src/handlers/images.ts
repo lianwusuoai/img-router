@@ -27,6 +27,7 @@ import { debug, error, generateRequestId, info, logRequestEnd, warn } from "../c
 import { weightedRouter } from "../core/router.ts";
 import { aiChatService } from "../core/ai-chat.ts";
 import { keyManager } from "../core/key-manager.ts";
+import { storageService } from "../core/storage.ts";
 
 /**
  * 处理 /v1/images/generations 端点
@@ -208,6 +209,39 @@ export async function handleImagesGenerations(req: Request): Promise<Response> {
     const data: ImageData[] = [];
 
     for (const img of images) {
+        // 保存到本地存储
+        try {
+            let base64ToSave = "";
+            if (img.b64_json) {
+                base64ToSave = img.b64_json;
+            } else if (img.url) {
+                // 如果是 URL，尝试下载并转换为 Base64 保存
+                try {
+                    const { base64 } = await urlToBase64(img.url);
+                    base64ToSave = base64;
+                } catch (e) {
+                    warn("Storage", `Failed to download image for storage: ${e}`);
+                }
+            }
+
+            if (base64ToSave) {
+                // 异步保存，不阻塞响应
+                storageService.saveImage(base64ToSave, {
+                    prompt: requestBody.prompt,
+                    model: requestBody.model || "unknown",
+                    params: {
+                        size: requestBody.size,
+                        n: requestBody.n,
+                        steps: requestBody.steps,
+                    }
+                }).then((filename: string | null) => {
+                    if (filename) info("Storage", `Auto-saved image: ${filename}`);
+                });
+            }
+        } catch (e) {
+            warn("Storage", `Failed to save image: ${e}`);
+        }
+
         // ... (保持原有的格式转换逻辑)
         if (desiredFormat === "b64_json") {
             if (img.b64_json) {

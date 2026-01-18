@@ -9,6 +9,7 @@ import { renderAdmin } from "./admin.js";
 import { renderSetting } from "./setting.js";
 import { renderChannel } from "./channel.js";
 import { renderKeys } from "./keys.js";
+import { renderGallery } from "./gallery.js";
 import { renderUpdate } from "./update.js";
 
 /**
@@ -21,6 +22,7 @@ const routes = {
   "/setting": { title: "系统设置", render: renderSetting },
   "/channel": { title: "渠道设置", render: renderChannel },
   "/keys": { title: "后端Key池", render: renderKeys },
+  "/pic": { title: "图片画廊", render: renderGallery },
   "/ai-chat": {
     title: "AI 助手 (AiChat)",
     render: async (container) => {

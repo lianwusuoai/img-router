@@ -4,7 +4,9 @@
     "jsr:@std/assert@*": "1.0.16",
     "jsr:@std/assert@^1.0.6": "1.0.16",
     "jsr:@std/encoding@^1.0.5": "1.0.10",
+    "jsr:@std/fs@^1.0.21": "1.0.21",
     "jsr:@std/internal@^1.0.12": "1.0.12",
+    "jsr:@std/path@^1.1.4": "1.1.4",
     "jsr:@std/yaml@*": "1.0.10",
     "jsr:@std/yaml@0.224": "0.224.3"
   },
@@ -18,8 +20,21 @@
     "@std/encoding@1.0.10": {
       "integrity": "8783c6384a2d13abd5e9e87a7ae0520a30e9f56aeeaa3bdf910a3eaaf5c811a1"
     },
+    "@std/fs@1.0.21": {
+      "integrity": "d720fe1056d78d43065a4d6e0eeb2b19f34adb8a0bc7caf3a4dbf1d4178252cd",
+      "dependencies": [
+        "jsr:@std/internal",
+        "jsr:@std/path"
+      ]
+    },
     "@std/internal@1.0.12": {
       "integrity": "972a634fd5bc34b242024402972cd5143eac68d8dffaca5eaa4dba30ce17b027"
+    },
+    "@std/path@1.1.4": {
+      "integrity": "1d2d43f39efb1b42f0b1882a25486647cb851481862dc7313390b2bb044314b5",
+      "dependencies": [
+        "jsr:@std/internal"
+      ]
     },
     "@std/yaml@0.224.3": {
       "integrity": "9da1ed0094f42ba24570b4d88a094b44a793ac7f2bc085c1939d3ac7e11cc0bb"
@@ -238,7 +253,9 @@
   },
   "workspace": {
     "dependencies": [
-      "jsr:@std/encoding@^1.0.5"
+      "jsr:@std/encoding@^1.0.5",
+      "jsr:@std/fs@^1.0.21",
+      "jsr:@std/path@^1.1.4"
     ]
   }
 }

@@ -31,6 +31,7 @@ import {
 import { providerRegistry } from "./providers/registry.ts";
 console.log("Loading app.ts...");
 import { aiChatService } from "./core/ai-chat.ts";
+import { storageService } from "./core/storage.ts";
 import type { ProviderName } from "./providers/base.ts";
 
 // 调试日志：确保 aiChatService 已加载
@@ -142,7 +143,7 @@ async function routeRequest(req: Request, ctx: RequestContext): Promise<Response
   const { pathname } = ctx.url;
   const { method } = req;
 
-  // info("DEBUG", `Request: ${method} ${pathname}`);
+  info("DEBUG", `Request: ${method} ${pathname}`);
 
   // 健康检查端点（允许 GET）
   if (pathname === "/health" && method === "GET") {
@@ -154,10 +155,11 @@ async function routeRequest(req: Request, ctx: RequestContext): Promise<Response
 
   // 静态页面（SPA 路由）
   // 所有前端路由都返回 index.html，由前端 Router 处理页面显示
-  const spaRoutes = ["/admin", "/setting", "/channel", "/keys", "/index", "/ui", "/", "/update", "/ai-chat"];
+  const spaRoutes = ["/admin", "/setting", "/channel", "/keys", "/index", "/ui", "/", "/update", "/ai-chat", "/pic"];
   const spaPath = (pathname.length > 1 && pathname.endsWith("/"))
     ? pathname.slice(0, -1)
     : pathname;
+  info("DEBUG", `Checking SPA route: path=${pathname}, spaPath=${spaPath}, match=${spaRoutes.includes(spaPath)}`);
   if (spaRoutes.includes(spaPath) && method === "GET") {
     try {
       const html = await Deno.readTextFile("web/index.html");
@@ -186,6 +188,47 @@ async function routeRequest(req: Request, ctx: RequestContext): Promise<Response
     } catch (e) {
       warn("HTTP", `无法加载静态资源 ${pathname}: ${e}`);
       return handleNotFound();
+    }
+  }
+
+  // 图片存储静态资源
+  if (pathname.startsWith("/storage/")) {
+    try {
+      const filePath = `data${pathname}`; // 映射到 data/storage/xxx
+      const file = await Deno.open(filePath, { read: true });
+      const stat = await file.stat();
+      
+      const ext = pathname.split(".").pop()?.toLowerCase();
+      let contentType = "application/octet-stream";
+      if (ext === "png") contentType = "image/png";
+      else if (ext === "jpg" || ext === "jpeg") contentType = "image/jpeg";
+      else if (ext === "webp") contentType = "image/webp";
+      else if (ext === "json") contentType = "application/json";
+
+      return new Response(file.readable, {
+        headers: {
+          "Content-Type": contentType,
+          "Content-Length": String(stat.size),
+        },
+      });
+    } catch (_e) {
+      // warn("HTTP", `无法加载存储资源 ${pathname}: ${e}`);
+      return handleNotFound();
+    }
+  }
+
+  // 画廊 API
+  if (pathname === "/api/gallery" && method === "GET") {
+    try {
+      const images = await storageService.listImages();
+      return new Response(JSON.stringify(images), {
+        headers: { "Content-Type": "application/json" },
+      });
+    } catch (e) {
+      return new Response(JSON.stringify({ error: String(e) }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" },
+      });
     }
   }
 

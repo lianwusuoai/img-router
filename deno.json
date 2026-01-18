@@ -1,8 +1,10 @@
 {
-  "version": "v1.7.9",
+  "version": "v1.8.0",
   "imports": {
     "imagescript": "https://deno.land/x/imagescript@1.3.0/mod.ts",
-    "@std/encoding": "jsr:@std/encoding@^1.0.5"
+    "@std/encoding": "jsr:@std/encoding@^1.0.5",
+    "@std/fs": "jsr:@std/fs@^1.0.21",
+    "@std/path": "jsr:@std/path@^1.1.4"
   },
   "compilerOptions": {
     "lib": ["deno.window", "deno.ns"],
