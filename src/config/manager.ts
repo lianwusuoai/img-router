@@ -296,8 +296,10 @@ export interface ProviderTaskDefaults {
   steps?: number | null;
   /** 任务权重 (0-100)，用于路由优先级 */
   weight?: number;
-  /** AI 聊天/增强配置 */
-  aiChat?: {
+  /** 模型映射配置 (自定义ID) */
+  modelMap?: string;
+  /** 提示词优化器配置 */
+  promptOptimizer?: {
     translate?: boolean;
     expand?: boolean;
   };
@@ -333,9 +335,9 @@ export interface SystemConfig {
 }
 
 /**
- * AI 聊天服务全局配置 (用于翻译和扩充 Prompt)
+ * 提示词优化器全局配置 (用于翻译和扩充 Prompt)
  */
-export interface AiChatConfig {
+export interface PromptOptimizerConfig {
   /** LLM API 基础地址 (OpenAI 兼容) */
   baseUrl: string;
   /** API Key */
@@ -353,16 +355,33 @@ export interface AiChatConfig {
 }
 
 /**
+ * S3/R2 存储配置
+ */
+export interface S3StorageConfig {
+  endpoint: string;
+  bucket: string;
+  accessKey: string;
+  secretKey: string;
+  region?: string;
+  publicUrl?: string; // 可选的公共访问域名
+}
+
+/**
  * 运行时完整配置
  */
 export interface RuntimeConfig {
   system: SystemConfig;
   providers: Record<string, RuntimeProviderConfig>;
   keyPools: Record<string, KeyPoolItem[]>;
-  /** 全局 AI 聊天服务配置 */
-  aiChat?: AiChatConfig;
+  /** 全局提示词优化器配置 */
+  promptOptimizer?: PromptOptimizerConfig;
   /** HuggingFace 模型到 URL 的映射配置 */
   hfModelMap?: Record<string, { main: string; backup?: string }>;
+  /** 存储配置 */
+  storage?: {
+    s3?: S3StorageConfig;
+    // 可以在此扩展其他存储配置，如 webdav
+  };
 }
 
 export type DynamicSystemConfig = SystemConfig; // 别名
@@ -705,9 +724,9 @@ class ConfigManager {
       if (typeof r.defaultSteps === "number") {
         next.defaultSteps = r.defaultSteps;
       } else if ("defaultSteps" in r && r.defaultSteps !== null) {
-         // 如果存在但不是数字，或者是 null，视情况处理
-         // 这里简单起见，如果是不合法的就丢弃（changed=true）
-         changed = true;
+        // 如果存在但不是数字，或者是 null，视情况处理
+        // 这里简单起见，如果是不合法的就丢弃（changed=true）
+        changed = true;
       }
 
       const sanitizeDefaults = (val: unknown): ProviderTaskDefaults | undefined => {
@@ -724,16 +743,16 @@ class ConfigManager {
         if (typeof v.steps === "number" || v.steps === null) out.steps = v.steps as number | null;
         if (typeof v.weight === "number") out.weight = v.weight;
 
-        // 处理 aiChat
-        if (v.aiChat && typeof v.aiChat === "object") {
-          const ai = v.aiChat as Record<string, unknown>;
-          out.aiChat = {
-            translate: typeof ai.translate === "boolean" ? ai.translate : undefined,
-            expand: typeof ai.expand === "boolean" ? ai.expand : undefined,
+        // 处理 promptOptimizer
+        if (v.promptOptimizer && typeof v.promptOptimizer === "object") {
+          const po = v.promptOptimizer as Record<string, unknown>;
+          out.promptOptimizer = {
+            translate: typeof po.translate === "boolean" ? po.translate : undefined,
+            expand: typeof po.expand === "boolean" ? po.expand : undefined,
           };
         }
 
-        const allowedKeys = new Set(["model", "size", "quality", "n", "weight", "aiChat", "steps"]);
+        const allowedKeys = new Set(["model", "size", "quality", "n", "weight", "promptOptimizer", "steps"]);
         for (const k of Object.keys(v)) {
           if (!allowedKeys.has(k)) {
             changed = true;
@@ -770,7 +789,6 @@ class ConfigManager {
         system: config.system || {},
         providers,
         keyPools: config.keyPools || {},
-        aiChat: config.aiChat,
         hfModelMap: config.hfModelMap,
       },
     };
@@ -791,7 +809,6 @@ class ConfigManager {
           system: loaded.system || {},
           providers: loaded.providers || {},
           keyPools: loaded.keyPools || {},
-          aiChat: loaded.aiChat,
           hfModelMap: loaded.hfModelMap,
         };
       }
@@ -803,7 +820,6 @@ class ConfigManager {
           system: loaded.system || {},
           providers: loaded.providers || {},
           keyPools: loaded.keyPools || {},
-          aiChat: loaded.aiChat,
           hfModelMap: loaded.hfModelMap,
         };
       }
@@ -1208,13 +1224,13 @@ export const setProviderTaskDefaults = (
 export const setProviderEnabled = (provider: string, enabled: boolean) =>
   configManager.setProviderEnabled(provider, enabled);
 
-export const getAiChatConfig = (): AiChatConfig | undefined => {
+export const getPromptOptimizerConfig = (): PromptOptimizerConfig | undefined => {
   const runtime = configManager.getRuntimeConfig();
-  const config = runtime.aiChat;
-  
-  const envBaseUrl = process.env.AI_CHAT_BASE_URL;
-  const envApiKey = process.env.AI_CHAT_API_KEY;
-  const envModel = process.env.AI_CHAT_MODEL;
+  const config = runtime.promptOptimizer;
+
+  const envBaseUrl = process.env.PROMPT_OPTIMIZER_BASE_URL;
+  const envApiKey = process.env.PROMPT_OPTIMIZER_API_KEY;
+  const envModel = process.env.PROMPT_OPTIMIZER_MODEL;
 
   if (!config && !envBaseUrl && !envApiKey) {
     return undefined;
@@ -1223,16 +1239,16 @@ export const getAiChatConfig = (): AiChatConfig | undefined => {
   return {
     baseUrl: envBaseUrl || config?.baseUrl || "",
     apiKey: envApiKey || config?.apiKey || "",
-    model: envModel || config?.model || "gpt-3.5-turbo",
+    model: envModel || config?.model || "",
     enableTranslate: config?.enableTranslate,
     translatePrompt: config?.translatePrompt,
     enableExpand: config?.enableExpand,
     expandPrompt: config?.expandPrompt,
   };
 };
-export const updateAiChatConfig = (config: AiChatConfig) => {
+export const updatePromptOptimizerConfig = (config: PromptOptimizerConfig) => {
   const runtime = configManager.getRuntimeConfig();
-  runtime.aiChat = config;
+  runtime.promptOptimizer = config;
   configManager.replaceRuntimeConfig(runtime);
 };
 

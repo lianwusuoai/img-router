@@ -1,8 +1,4 @@
-import {
-  getKeyPool,
-  replaceRuntimeConfig,
-  getRuntimeConfig,
-} from "../config/manager.ts";
+import { getKeyPool, getRuntimeConfig, replaceRuntimeConfig } from "../config/manager.ts";
 import { info, warn } from "./logger.ts";
 
 /**
@@ -53,12 +49,12 @@ export class KeyManager {
     for (const [_provider, pool] of Object.entries(config.keyPools)) {
       for (const keyItem of pool) {
         if (keyItem.status === "rate_limited" || keyItem.status === "disabled") {
-            // 注意：disabled 手动禁用的不应该自动开启，但 rate_limited 可以重置
-            // 这里我们假设 rate_limited 是系统自动标记的，disabled 是人工的
-            if (keyItem.status === "rate_limited") {
-                keyItem.status = "active";
-                changed = true;
-            }
+          // 注意：disabled 手动禁用的不应该自动开启，但 rate_limited 可以重置
+          // 这里我们假设 rate_limited 是系统自动标记的，disabled 是人工的
+          if (keyItem.status === "rate_limited") {
+            keyItem.status = "active";
+            changed = true;
+          }
         }
       }
     }
@@ -80,20 +76,20 @@ export class KeyManager {
     this.checkDailyReset();
 
     const pool = getKeyPool(provider);
-    
+
     // 1. 过滤可用 Key
-    const activeKeys = pool.filter(k => k.enabled !== false && k.status === "active");
+    const activeKeys = pool.filter((k) => k.enabled !== false && k.status === "active");
 
     if (activeKeys.length === 0) {
-        // 检查是否允许匿名 (目前仅 HF)
-        if (provider === "HuggingFace") {
-            // 如果池子本来就是空的，或者所有都耗尽了，HF 可以尝试匿名
-            // 但按照 V4 方案：策略 A (先匿名 -> Token) 或 B (Token 池)
-            // 这里我们简化：如果没配置 Token，就返回 null (代表匿名)
-            // 如果配置了 Token 但全挂了，也返回 null (尝试匿名兜底)
-            return null; 
-        }
+      // 检查是否允许匿名 (目前仅 HF)
+      if (provider === "HuggingFace") {
+        // 如果池子本来就是空的，或者所有都耗尽了，HF 可以尝试匿名
+        // 但按照 V4 方案：策略 A (先匿名 -> Token) 或 B (Token 池)
+        // 这里我们简化：如果没配置 Token，就返回 null (代表匿名)
+        // 如果配置了 Token 但全挂了，也返回 null (尝试匿名兜底)
         return null;
+      }
+      return null;
     }
 
     // 2. 负载均衡 (这里简单随机，也可以轮询)
@@ -111,11 +107,14 @@ export class KeyManager {
     const pool = config.keyPools[provider];
     if (!pool) return;
 
-    const item = pool.find(k => k.key === key);
+    const item = pool.find((k) => k.key === key);
     if (item) {
       item.status = "rate_limited";
       item.lastUsed = Date.now();
-      warn("KeyManager", `Provider ${provider} Key ...${key.slice(-4)} 已标记为限流 (Rate Limited)`);
+      warn(
+        "KeyManager",
+        `Provider ${provider} Key ...${key.slice(-4)} 已标记为限流 (Rate Limited)`,
+      );
       replaceRuntimeConfig(config);
     }
   }
@@ -130,7 +129,7 @@ export class KeyManager {
     const pool = config.keyPools[provider];
     if (!pool) return;
 
-    const item = pool.find(k => k.key === key);
+    const item = pool.find((k) => k.key === key);
     if (item) {
       item.status = "disabled"; // 永久禁用
       item.enabled = false;
@@ -143,7 +142,7 @@ export class KeyManager {
    * 报告 Key 成功使用 (用于统计或恢复)
    */
   public reportSuccess(_provider: string, _key: string) {
-      // 可以用来做熔断恢复（比如连续成功多少次解除限流），暂不实现复杂逻辑
+    // 可以用来做熔断恢复（比如连续成功多少次解除限流），暂不实现复杂逻辑
   }
 }
 

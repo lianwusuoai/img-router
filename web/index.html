@@ -10,79 +10,82 @@
   </head>
   <body>
     <div id="app-container">
-    <!-- Sidebar -->
-    <aside class="sidebar">
-      <div class="logo-box">
-        <div class="logo-icon">
-          <i class="ri-router-line"></i>
-        </div>
-        <span class="logo-text">ImgRouter</span>
-      </div>
-
-      <div class="nav-menu">
-        <div class="nav-group">
-          <a href="/admin" class="nav-item" data-link>
-            <i class="ri-dashboard-line"></i>
-            <span>仪表盘</span>
-          </a>
+      <!-- Sidebar -->
+      <aside class="sidebar">
+        <div class="logo-box">
+          <div class="logo-icon">
+            <i class="ri-router-line"></i>
+          </div>
+          <span class="logo-text">ImgRouter</span>
         </div>
 
-        <div class="nav-group">
-          <div class="nav-title">系统管理</div>
-          <a href="/setting" class="nav-item" data-link>
-            <i class="ri-settings-4-line"></i>
-            <span>系统设置</span>
-          </a>
-          <a href="/channel" class="nav-item" data-link>
-            <i class="ri-route-line"></i>
+        <div class="nav-menu">
+          <div class="nav-group">
+            <a href="/admin" class="nav-item" data-link>
+              <i class="ri-dashboard-line"></i>
+              <span>仪表盘</span>
+            </a>
+          </div>
+
+          <div class="nav-group">
+            <div class="nav-title">系统管理</div>
+            <a href="/setting" class="nav-item" data-link>
+              <i class="ri-settings-4-line"></i>
+              <span>系统设置</span>
+            </a>
+            <a href="/channel" class="nav-item" data-link>
+            <i class="ri-git-merge-line"></i>
             <span>渠道设置</span>
-          </a>
-          <a href="/keys" class="nav-item" data-link>
+        </a>
+        <a href="/keys" class="nav-item" data-link>
             <i class="ri-key-2-line"></i>
             <span>Key池管理</span>
-          </a>
-          <a href="/pic" class="nav-item" data-link>
-            <i class="ri-gallery-line"></i>
-            <span>图片画廊</span>
-          </a>
-          <a href="/ai-chat" class="nav-item" data-link>
-            <i class="ri-robot-line"></i>
-            <span>AI 助手 (AiChat)</span>
-          </a>
-        </div>
+        </a>
+            <a href="/pic" class="nav-item" data-link>
+              <i class="ri-gallery-line"></i>
+              <span>图片画廊</span>
+            </a>
+            <a href="/prompt-optimizer" class="nav-item" data-link>
+            <i class="ri-magic-line"></i>
+            <span>提示词优化器</span>
+        </a>
+          </div>
 
-        <div class="nav-group">
-          <div class="nav-title">更新</div>
-          <a href="/update" class="nav-item" data-link>
-            <i class="ri-github-line"></i>
-            <span>检查更新</span>
-          </a>
+          <div class="nav-group">
+            <div class="nav-title">更新</div>
+            <a href="/update" class="nav-item" data-link>
+              <i class="ri-github-line"></i>
+              <span>检查更新</span>
+            </a>
+          </div>
         </div>
-      </div>
-    </aside>
+      </aside>
 
-    <!-- Main Content -->
-    <main class="main-content">
-      <!-- Header -->
-      <header class="header">
-        <div class="page-title">
-          <i class="ri-menu-fold-line" style="color: var(--text-secondary); margin-right: 8px"></i>
-          <span id="headerTitle">仪表盘</span>
+      <!-- Main Content -->
+      <main class="main-content">
+        <!-- Header -->
+        <header class="header">
+          <div class="page-title">
+            <i
+              class="ri-menu-fold-line"
+              style="color: var(--text-secondary); margin-right: 8px"
+            ></i>
+            <span id="headerTitle">仪表盘</span>
+          </div>
+          <div class="status-pill">
+            <div class="status-dot"></div>
+            <span>运行中</span>
+          </div>
+        </header>
+
+        <!-- Dynamic Content Container -->
+        <div id="main-container">
+          <!-- Content will be loaded here -->
         </div>
-        <div class="status-pill">
-          <div class="status-dot"></div>
-          <span>运行中</span>
-        </div>
-      </header>
+      </main>
 
-      <!-- Dynamic Content Container -->
-      <div id="main-container">
-        <!-- Content will be loaded here -->
-      </div>
-    </main>
-
-    <!-- Modal Container (Reusable) -->
-    <div id="modal-container"></div>
+      <!-- Modal Container (Reusable) -->
+      <div id="modal-container"></div>
     </div>
 
     <script type="module" src="js/main.js"></script>

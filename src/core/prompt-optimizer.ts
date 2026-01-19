@@ -1,16 +1,16 @@
 import { debug, warn } from "../core/logger.ts";
-import { getAiChatConfig } from "../config/manager.ts";
+import { getPromptOptimizerConfig } from "../config/manager.ts";
 
-export class AiChatService {
-  private static instance: AiChatService;
+export class PromptOptimizerService {
+  private static instance: PromptOptimizerService;
 
   private constructor() {}
 
-  public static getInstance(): AiChatService {
-    if (!AiChatService.instance) {
-      AiChatService.instance = new AiChatService();
+  public static getInstance(): PromptOptimizerService {
+    if (!PromptOptimizerService.instance) {
+      PromptOptimizerService.instance = new PromptOptimizerService();
     }
-    return AiChatService.instance;
+    return PromptOptimizerService.instance;
   }
 
   /**
@@ -22,7 +22,7 @@ export class AiChatService {
   ): Promise<string> {
     if (!prompt) return "";
 
-    const config = getAiChatConfig();
+    const config = getPromptOptimizerConfig();
     // 优先使用 options 中的配置，如果未定义则回退到全局配置
     const shouldTranslate = options.translate ?? config?.enableTranslate ?? false;
     const shouldExpand = options.expand ?? config?.enableExpand ?? false;
@@ -43,14 +43,14 @@ export class AiChatService {
   }
 
   private translatePrompt(prompt: string): Promise<string> {
-    const config = getAiChatConfig();
+    const config = getPromptOptimizerConfig();
     const system = config?.translatePrompt ||
       "You are a professional prompt engineer and translator. Translate the user's image generation prompt into English. Only output the translated text, no explanation.";
     return this.callLLM(system, prompt, "Prompt Translation");
   }
 
   private expandPrompt(prompt: string): Promise<string> {
-    const config = getAiChatConfig();
+    const config = getPromptOptimizerConfig();
     const system = config?.expandPrompt ||
       "You are a professional prompt engineer. Expand the user's short prompt into a detailed, high-quality image generation prompt. Keep it descriptive and aesthetic. Output ONLY the expanded prompt in English.";
     return this.callLLM(system, prompt, "Prompt Expansion");
@@ -59,7 +59,9 @@ export class AiChatService {
   /**
    * 测试连接
    */
-  public async testConnection(config: { baseUrl: string; apiKey: string; model: string }): Promise<{ reply: string; url: string; model: string }> {
+  public async testConnection(
+    config: { baseUrl: string; apiKey: string; model: string },
+  ): Promise<{ reply: string; url: string; model: string }> {
     const url = this.buildChatCompletionsUrl(config.baseUrl);
     const reply = await this.callLLM(
       "You are a helpful assistant.",
@@ -89,7 +91,7 @@ export class AiChatService {
 
     try {
       const url = this.buildModelsUrl(config.baseUrl);
-      
+
       const response = await fetch(url, {
         method: "GET",
         headers: {
@@ -115,7 +117,7 @@ export class AiChatService {
         // deno-lint-ignore no-explicit-any
         return data.map((m: any) => (typeof m === "string" ? m : m.id));
       }
-      
+
       return [];
     } catch (e) {
       clearTimeout(timeoutId);
@@ -124,26 +126,26 @@ export class AiChatService {
   }
 
   private async callLLM(
-    system: string, 
-    user: string, 
-    context: string, 
+    system: string,
+    user: string,
+    context: string,
     overrideConfig?: { baseUrl: string; apiKey: string; model: string },
     options?: { strict?: boolean },
   ): Promise<string> {
-    const globalConfig = getAiChatConfig();
+    const globalConfig = getPromptOptimizerConfig();
     const config = overrideConfig || globalConfig;
 
     if (!config || !config.baseUrl || !config.apiKey) {
       if (options?.strict) {
-        throw new Error("AI Chat 未配置：缺少 Base URL 或 API Key");
+        throw new Error("PromptOptimizer 未配置：缺少 Base URL 或 API Key");
       }
-      warn("AiChat", "AI Chat service not configured (missing URL or Key). Skipping.");
+      warn("PromptOptimizer", "PromptOptimizer service not configured (missing URL or Key). Skipping.");
       return user;
     }
 
     try {
-      debug("AiChat", `Starting ${context}...`);
-      
+      debug("PromptOptimizer", `Starting ${context}...`);
+
       const doRequest = async (targetUrl: string) => {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s 超时
@@ -186,39 +188,44 @@ export class AiChatService {
       const url = this.buildChatCompletionsUrl(config.baseUrl);
       try {
         const text = await doRequest(url);
-        debug("AiChat", `${context} result: ${text.substring(0, 50)}...`);
+        debug("PromptOptimizer", `${context} result: ${text.substring(0, 50)}...`);
         return text;
       } catch (e) {
         // 智能重试：如果是因为 localhost 连接拒绝，尝试 host.docker.internal
         const errStr = String(e);
-        const isLocalhost = config.baseUrl.includes("localhost") || config.baseUrl.includes("127.0.0.1");
-        const isConnError = errStr.includes("Connection refused") || errStr.includes("os error 111") || errStr.includes("client error");
+        const isLocalhost = config.baseUrl.includes("localhost") ||
+          config.baseUrl.includes("127.0.0.1");
+        const isConnError = errStr.includes("Connection refused") ||
+          errStr.includes("os error 111") || errStr.includes("client error");
 
         if (isLocalhost && isConnError) {
           const newBaseUrl = config.baseUrl
             .replace("localhost", "host.docker.internal")
             .replace("127.0.0.1", "host.docker.internal");
-          
-          warn("AiChat", `Connection to localhost failed. Retrying with host.docker.internal: ${newBaseUrl}`);
-          
+
+          warn(
+            "PromptOptimizer",
+            `Connection to localhost failed. Retrying with host.docker.internal: ${newBaseUrl}`,
+          );
+
           try {
             const retryUrl = this.buildChatCompletionsUrl(newBaseUrl);
-            warn("AiChat", `Retrying connection with: ${retryUrl}`);
+            warn("PromptOptimizer", `Retrying connection with: ${retryUrl}`);
             const text = await doRequest(retryUrl);
-            debug("AiChat", `${context} retry success with host.docker.internal`);
+            debug("PromptOptimizer", `${context} retry success with host.docker.internal`);
             return text;
           } catch (retryError) {
-             warn("AiChat", `Retry with host.docker.internal also failed: ${retryError}`);
-             // 明确抛出重试失败的错误，并提供诊断建议
-             throw new Error(
-               `连接 localhost 失败 (Connection Refused)。\n` +
-               `已尝试自动重试 host.docker.internal 但仍失败。\n` +
-               `这通常是因为：\n` +
-               `1. AI 终端容器未在宿主机映射端口；\n` +
-               `2. Windows 防火墙拦截了端口的入站连接；\n` +
-               `3. AI 终端未监听 0.0.0.0。\n` +
-               `建议：尝试使用 AI 终端的容器名称代替 localhost。`
-             );
+            warn("PromptOptimizer", `Retry with host.docker.internal also failed: ${retryError}`);
+            // 明确抛出重试失败的错误，并提供诊断建议
+            throw new Error(
+              `连接 localhost 失败 (Connection Refused)。\n` +
+                `已尝试自动重试 host.docker.internal 但仍失败。\n` +
+                `这通常是因为：\n` +
+                `1. AI 终端容器未在宿主机映射端口；\n` +
+                `2. Windows 防火墙拦截了端口的入站连接；\n` +
+                `3. AI 终端未监听 0.0.0.0。\n` +
+                `建议：尝试使用 AI 终端的容器名称代替 localhost。`,
+            );
           }
         }
         throw e;
@@ -228,7 +235,7 @@ export class AiChatService {
         throw e;
       }
       warn(
-        "AiChat",
+        "PromptOptimizer",
         `${context} failed: ${e instanceof Error ? e.message : String(e)}. Using original text.`,
       );
       return user; // 回退到原始文本
@@ -253,4 +260,4 @@ export class AiChatService {
   }
 }
 
-export const aiChatService = AiChatService.getInstance();
+export const promptOptimizerService = PromptOptimizerService.getInstance();

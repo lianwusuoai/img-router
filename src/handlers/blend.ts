@@ -144,7 +144,7 @@ export async function handleImagesBlend(req: Request): Promise<Response> {
     // Inject defaults
     const defaults = getProviderTaskDefaults(provider.name, "blend");
     if (requestBody.steps === undefined && defaults.steps) {
-        requestBody.steps = defaults.steps;
+      requestBody.steps = defaults.steps;
     }
 
     const desiredFormat = requestBody.response_format || "url";

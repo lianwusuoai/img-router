@@ -262,7 +262,7 @@ body {
   background: var(--surface);
   border-radius: var(--border-radius);
   padding: 16px;
-  margin-bottom: 16px;
+  margin-bottom: 8px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
 }
 
@@ -671,13 +671,16 @@ input:checked + .slider:before {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  overflow-x: auto;
+  padding-bottom: 8px;
 }
 
 .channel-row {
   display: grid;
-  grid-template-columns: 100px 1.5fr 1fr 0.8fr 0.8fr;
-  gap: 8px;
+  grid-template-columns: 60px 160px 100px minmax(200px, 2fr) minmax(140px, 1fr) 100px 100px 80px;
+  gap: 12px;
   align-items: center;
+  min-width: 1100px;
 }
 
 .channel-label {

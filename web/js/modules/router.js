@@ -8,6 +8,7 @@
 import { renderAdmin } from "./admin.js";
 import { renderSetting } from "./setting.js";
 import { renderChannel } from "./channel.js";
+// import { renderModelMap } from "./model_map.js";
 import { renderKeys } from "./keys.js";
 import { renderGallery } from "./gallery.js";
 import { renderUpdate } from "./update.js";
@@ -21,13 +22,14 @@ const routes = {
   "/admin": { title: "仪表盘", render: renderAdmin },
   "/setting": { title: "系统设置", render: renderSetting },
   "/channel": { title: "渠道设置", render: renderChannel },
+  // "/model-map": { title: "模型映射", render: renderModelMap },
   "/keys": { title: "后端Key池", render: renderKeys },
   "/pic": { title: "图片画廊", render: renderGallery },
-  "/ai-chat": {
-    title: "AI 助手 (AiChat)",
+  "/prompt-optimizer": {
+    title: "提示词优化器 (PromptOptimizer)",
     render: async (container) => {
-      const { renderAiChat } = await import("./ai_chat.js");
-      await renderAiChat(container);
+      const { renderPromptOptimizer } = await import("./prompt-optimizer.js");
+      await renderPromptOptimizer(container);
     },
   },
   "/update": { title: "检查更新", render: renderUpdate },

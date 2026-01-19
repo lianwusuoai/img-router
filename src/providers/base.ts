@@ -336,7 +336,7 @@ export abstract class BaseProvider implements IProvider {
       this.name,
       `selectCount check: requestN=${requestCount}, overrideN=${override.n}, defaultN=${defaultConfig}, task=${
         hasImages ? "edit" : "text"
-      }`
+      }`,
     );
 
     // 强制优先使用 WebUI 运行时配置的渠道列表
@@ -405,7 +405,7 @@ export abstract class BaseProvider implements IProvider {
     _apiKey: string,
     request: ImageGenerationRequest,
     _options: GenerationOptions,
-    executor: (req: ImageGenerationRequest) => Promise<GenerationResult>
+    executor: (req: ImageGenerationRequest) => Promise<GenerationResult>,
   ): Promise<GenerationResult> {
     const requestedN = request.n || 1;
     const maxNative = this.capabilities.maxNativeOutputImages || 1;
@@ -417,7 +417,7 @@ export abstract class BaseProvider implements IProvider {
 
     info(
       this.name,
-      `检测到 n=${requestedN} 超过原生限制 (${maxNative})，启用通用并发生成模式`
+      `检测到 n=${requestedN} 超过原生限制 (${maxNative})，启用通用并发生成模式`,
     );
 
     const tasks: Promise<GenerationResult>[] = [];
@@ -432,7 +432,7 @@ export abstract class BaseProvider implements IProvider {
       const subRequest = { ...request, n: currentBatchN };
       // 增加并发延迟以避免触发服务端的速率限制或连接错误（如 tls handshake eof）
       // Pollinations 等免费渠道对并发非常敏感，建议至少 1.5s - 2s
-      const taskDelay = batchIndex * 1500; 
+      const taskDelay = batchIndex * 1500;
 
       const taskPromise = (async () => {
         if (taskDelay > 0) await new Promise((r) => setTimeout(r, taskDelay));

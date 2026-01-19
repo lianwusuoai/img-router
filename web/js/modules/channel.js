@@ -144,10 +144,109 @@ export async function renderChannel(container) {
     if (e.target.dataset.provider) {
       debounceSave();
     }
+
+    // 监听编辑映射按钮点击
+    if (e.target.id === "btn-edit-hf-map") {
+      showModelMapEditor();
+    }
   });
 
   // 加载配置
   await loadChannelConfig();
+}
+
+/**
+ * 显示模型映射编辑器弹窗
+ */
+function showModelMapEditor() {
+  const provider = currentConfig.providers.find((p) => p.name === "HuggingFace");
+  if (!provider) return;
+
+  const modelMap = provider.modelMap || {};
+  const modalId = "modal-hf-model-map";
+  let modal = document.getElementById(modalId);
+
+  if (!modal) {
+    modal = document.createElement("div");
+    modal.id = modalId;
+    modal.className = "modal";
+    document.body.appendChild(modal);
+  }
+
+  const rowsHtml = Object.entries(modelMap).map(([name, url]) => `
+    <div class="model-map-row" style="display: flex; gap: 8px; margin-bottom: 8px;">
+      <input type="text" class="input model-name" placeholder="模型名称 (如 Flux.1)" value="${name}" style="flex: 1;">
+      <input type="text" class="input model-url" placeholder="Space URL (如 black-forest-labs/FLUX.1-schnell)" value="${url}" style="flex: 2;">
+      <button class="btn-icon btn-remove-row" style="color: red;"><i class="ri-delete-bin-line"></i></button>
+    </div>
+  `).join("");
+
+  modal.innerHTML = `
+    <div class="modal-content" style="max-width: 600px;">
+      <div class="modal-header">
+        <h3 class="modal-title">HuggingFace 模型映射配置</h3>
+        <button class="btn-icon modal-close"><i class="ri-close-line"></i></button>
+      </div>
+      <div class="modal-body">
+        <div id="modelMapList">
+          ${rowsHtml}
+          ${
+    Object.keys(modelMap).length === 0
+      ? '<div class="empty-text" style="text-align:center; padding: 20px; color: #888;">暂无映射，点击下方按钮添加</div>'
+      : ""
+  }
+        </div>
+        <button class="btn btn-secondary" id="btnAddMapRow" style="width: 100%; margin-top: 8px;">
+          <i class="ri-add-line"></i> 添加映射
+        </button>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary modal-close">取消</button>
+        <button class="btn btn-primary" id="btnSaveModelMap">保存配置</button>
+      </div>
+    </div>
+  `;
+
+  modal.style.display = "flex";
+
+  // 内部事件监听
+  modal.querySelector(".modal-close").onclick = () => modal.style.display = "none";
+  modal.querySelectorAll(".modal-close")[1].onclick = () => modal.style.display = "none";
+
+  modal.querySelector("#btnAddMapRow").onclick = () => {
+    const row = document.createElement("div");
+    row.className = "model-map-row";
+    row.style = "display: flex; gap: 8px; margin-bottom: 8px;";
+    row.innerHTML = `
+      <input type="text" class="input model-name" placeholder="模型名称" style="flex: 1;">
+      <input type="text" class="input model-url" placeholder="Space URL" style="flex: 2;">
+      <button class="btn-icon btn-remove-row" style="color: red;"><i class="ri-delete-bin-line"></i></button>
+    `;
+    const list = modal.querySelector("#modelMapList");
+    const empty = list.querySelector(".empty-text");
+    if (empty) empty.remove();
+    list.appendChild(row);
+  };
+
+  modal.addEventListener("click", (e) => {
+    if (e.target.closest(".btn-remove-row")) {
+      e.target.closest(".model-map-row").remove();
+    }
+  });
+
+  modal.querySelector("#btnSaveModelMap").onclick = async () => {
+    const newMap = {};
+    modal.querySelectorAll(".model-map-row").forEach((row) => {
+      const name = row.querySelector(".model-name").value.trim();
+      const url = row.querySelector(".model-url").value.trim();
+      if (name && url) newMap[name] = url;
+    });
+
+    provider.modelMap = newMap;
+    modal.style.display = "none";
+    await debounceSave();
+    alert("映射配置已保存，请刷新页面以应用到模型选择框。");
+  };
 }
 
 /**
@@ -190,7 +289,7 @@ function renderAllChannels(providers) {
     if (!providerDefaults) {
       providerDefaults = (channelRuntimeConfig.providers || {})[provider.name.toLowerCase()] || {};
     }
-    
+
     // Inject global default steps into provider object for fallback usage in UI
     provider.defaultSteps = providerDefaults.defaultSteps || provider.defaultSteps || 4;
 
@@ -202,7 +301,7 @@ function renderAllChannels(providers) {
     let extraConfigHtml = "";
     if (provider.name === "HuggingFace") {
       extraConfigHtml = `
-        <div style="padding: 0 0 16px 0; border-bottom: 1px solid var(--border-color); margin-bottom: 16px;">
+        <div style="padding: 0 0 8px 0; border-bottom: 1px solid var(--border-color); margin-bottom: 8px;">
             <div style="display: flex; gap: 24px; align-items: flex-start;">
                 <div class="form-group" style="margin-bottom: 0; flex: 1;">
                     <label class="form-label" style="display:flex; justify-content:space-between; align-items:center;">
@@ -220,9 +319,10 @@ function renderAllChannels(providers) {
 
     const section = document.createElement("div");
     section.className = "form-section";
-    section.style.padding = "12px 16px";
+    section.style.padding = "6px 16px";
+    section.style.marginBottom = "8px";
     section.innerHTML = `
-            <div class="form-header" style="display:flex; justify-content:space-between; align-items:center; padding-bottom: 8px; margin-bottom: 8px;">
+            <div class="form-header" style="display:flex; justify-content:space-between; align-items:center; padding-bottom: 2px; margin-bottom: 4px;">
                 <h3 class="card-title" style="font-size: 0.9rem;">
                     ${provider.name} 
                     <span style="font-size: 0.7rem; color: #888; font-weight: normal; margin-left: 8px;">
@@ -245,14 +345,22 @@ function renderAllChannels(providers) {
       isEnabled ? "" : "opacity:0.5; pointer-events:none; transition: opacity 0.3s;"
     }">
                 <div class="channel-row">
-                    <div class="channel-label"></div>
+                    <div class="channel-header">权重</div>
+                    <div class="channel-header">模型映射 (自定义ID)</div>
+                    <div class="channel-header">渠道名称</div>
                     <div class="channel-header">模型</div>
                     <div class="channel-header">尺寸</div>
                     <div class="channel-header">质量</div>
                     <div class="channel-header">生图数量</div>
-                    ${provider.name === "HuggingFace" ? '<div class="channel-header">推理步数</div>' : ""}
+                    <div class="channel-header">生图步数</div>
                 </div>
                 <div class="channel-row">
+                    <div class="channel-cell">${
+      buildWeightInput(provider, textDefaults.weight, "text")
+    }</div>
+                    <div class="channel-cell">${
+      buildModelMapInput(provider, textDefaults.modelMap, "text")
+    }</div>
                     <div class="channel-label" title="只看本次发送的文字进行生图">
                         <i class="ri-image-add-line"></i>
                         <span>文生图</span>
@@ -269,9 +377,15 @@ function renderAllChannels(providers) {
                     <div class="channel-cell">${
       buildCountSelect(provider, textDefaults.n, "text")
     }</div>
-                    ${provider.name === "HuggingFace" ? `<div class="channel-cell">${buildStepsInput(provider, textDefaults.steps, "text")}</div>` : ""}
+                    <div class="channel-cell">${buildStepsInput(provider, textDefaults.steps, "text")}</div>
                 </div>
                 <div class="channel-row">
+                    <div class="channel-cell">${
+      buildWeightInput(provider, editDefaults.weight, "edit")
+    }</div>
+                    <div class="channel-cell">${
+      buildModelMapInput(provider, editDefaults.modelMap, "edit")
+    }</div>
                     <div class="channel-label" title="只看本次发送的图片和文字进行生图">
                         <i class="ri-edit-2-line"></i>
                         <span>图片编辑</span>
@@ -288,9 +402,15 @@ function renderAllChannels(providers) {
                     <div class="channel-cell">${
       buildCountSelect(provider, editDefaults.n, "edit")
     }</div>
-                    ${provider.name === "HuggingFace" ? `<div class="channel-cell">${buildStepsInput(provider, editDefaults.steps, "edit")}</div>` : ""}
+                    <div class="channel-cell">${buildStepsInput(provider, editDefaults.steps, "edit")}</div>
                 </div>
                 <div class="channel-row">
+                    <div class="channel-cell">${
+      buildWeightInput(provider, blendDefaults.weight, "blend")
+    }</div>
+                    <div class="channel-cell">${
+      buildModelMapInput(provider, blendDefaults.modelMap, "blend")
+    }</div>
                     <div class="channel-label" title="会参考上面对话的内容和图片，进行生图">
                         <i class="ri-magic-line"></i>
                         <span>融合生图</span>
@@ -308,22 +428,30 @@ function renderAllChannels(providers) {
                     <div class="channel-cell">${
       buildCountSelect(provider, blendDefaults.n, "blend")
     }</div>
-                    ${provider.name === "HuggingFace" ? `<div class="channel-cell">${buildStepsInput(provider, blendDefaults.steps, "blend")}</div>` : ""}
+                    <div class="channel-cell">${buildStepsInput(provider, blendDefaults.steps, "blend")}</div>
                 </div>
             </div>
         `;
     container.appendChild(section);
-
-    if (provider.name === "HuggingFace") {
-      const btn = section.querySelector("#btn-edit-hf-map");
-      if (btn) {
-        btn.addEventListener("click", (e) => {
-          e.preventDefault();
-          openHfMapModal();
-        });
-      }
-    }
   }
+}
+
+/**
+ * 构建模型映射输入框
+ *
+ * @param {Object} provider - Provider 对象
+ * @param {string} currentValue - 当前值
+ * @param {string} task - 任务类型
+ * @returns {string} HTML 字符串
+ */
+function buildModelMapInput(provider, currentValue, task) {
+  return `<input type="text" class="form-control" 
+    data-provider="${provider.name}" 
+    data-task="${task}" 
+    data-field="modelMap" 
+    value="${currentValue || ""}" 
+    placeholder="自定义ID (如文生图)"
+  >`;
 }
 
 /**
@@ -448,7 +576,8 @@ function buildSizeSelect(provider, task, currentValue, currentModel) {
       selected = "selected";
       hasSelection = true;
     }
-    const label = (isDoubao || isModelScope || isPollinations) ? formatSizeWithRatio(s) : s;
+    // 统一应用比例显示格式，提升体验
+    const label = formatSizeWithRatio(s);
     html += `<option value="${s}" ${selected}>${label}</option>`;
   }
 
@@ -461,7 +590,7 @@ function buildSizeSelect(provider, task, currentValue, currentModel) {
       `<select class="form-control" data-provider="${provider.name}" data-task="${task}" data-field="size">`;
     for (let i = 0; i < sizes.length; i++) {
       const s = sizes[i];
-      const label = (isDoubao || isModelScope) ? formatSizeWithRatio(s) : s;
+      const label = formatSizeWithRatio(s);
       const selected = (i === 0) ? "selected" : "";
       html += `<option value="${s}" ${selected}>${label}</option>`;
     }
@@ -561,7 +690,20 @@ function buildStepsInput(provider, currentValue, task) {
   const defaultSteps = provider.defaultSteps || 4; // Use global default if task specific is not set, though here we want task specific input
   const value = currentValue !== undefined && currentValue !== null ? currentValue : defaultSteps;
 
-  return `<input type="number" class="form-control" data-provider="${provider.name}" data-task="${task}" data-field="steps" value="${value}" min="1" max="100" style="width: 80px;">`;
+  return `<input type="number" class="form-control" data-provider="${provider.name}" data-task="${task}" data-field="steps" value="${value}" min="1" max="100" style="width: 100%;">`;
+}
+
+/**
+ * 构建权重输入框
+ *
+ * @param {Object} provider - Provider 对象
+ * @param {number|string} currentValue - 当前选中的值
+ * @param {string} task - 任务类型
+ * @returns {string} HTML 字符串
+ */
+function buildWeightInput(provider, currentValue, task) {
+  const value = currentValue !== undefined && currentValue !== null ? currentValue : 1;
+  return `<input type="number" class="form-control" data-provider="${provider.name}" data-task="${task}" data-field="weight" value="${value}" min="0" max="100" style="width: 100%;" title="权重越高，被选中的概率越大 (0表示禁用路由)">`;
 }
 
 /**
@@ -672,10 +814,6 @@ const debounceSave = debounce(async () => {
     if (field === "enabled") {
       payload.providers[provider].enabled = value;
     } else if (field === "defaultSteps") {
-      // payload.providers[provider].defaultSteps = value; 
-      // User removed global steps, but if we keep it for backward compatibility or as a fallback
-      // Actually we removed the input from UI, so this branch won't be hit unless there are leftover inputs.
-      // But we added steps to tasks.
       payload.providers[provider].defaultSteps = value;
     } else if (task) {
       if (!payload.providers[provider][task]) {
@@ -699,148 +837,3 @@ const debounceSave = debounce(async () => {
     console.error("保存出错", e);
   }
 }, 1000);
-
-// ==========================================
-// HuggingFace Modal Logic
-// ==========================================
-
-let hfMapModal = null;
-
-async function openHfMapModal() {
-  // 1. Fetch current map
-  let currentMap = {};
-  try {
-    const res = await apiFetch("/api/config/hf-map");
-    if (res.ok) {
-      currentMap = await res.json();
-    }
-  } catch (e) {
-    console.error("Failed to fetch HF map", e);
-    alert("加载配置失败");
-    return;
-  }
-
-  // 2. Create Modal HTML if not exists
-  if (!hfMapModal) {
-    hfMapModal = document.createElement("div");
-    hfMapModal.style.cssText = `
-            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-            background: rgba(0,0,0,0.5); z-index: 1000;
-            display: flex; justify-content: center; align-items: center;
-        `;
-    hfMapModal.innerHTML = `
-            <div class="card" style="width: 600px; max-height: 80vh; display: flex; flex-direction: column; background: var(--bg-card); box-shadow: 0 4px 12px rgba(0,0,0,0.2);">
-                <div class="card-header">
-                    <h3 class="card-title">HuggingFace 模型映射配置</h3>
-                    <button class="btn-text" id="closeHfMapModal" style="font-size: 20px; color: var(--text-primary);">&times;</button>
-                </div>
-                <div style="padding: 16px; overflow-y: auto; flex: 1;">
-                    <p style="font-size: 12px; color: var(--text-secondary); margin-bottom: 12px;">
-                        配置模型名称到 HuggingFace Space URL 的映射。Space URL 必须包含 https:// 前缀。
-                    </p>
-                    <table style="width: 100%; border-collapse: collapse;">
-                        <thead>
-                            <tr style="text-align: left; border-bottom: 1px solid var(--border-color);">
-                                <th style="padding: 8px; width: 40%;">模型名称</th>
-                                <th style="padding: 8px;">Space URL</th>
-                                <th style="width: 40px;"></th>
-                            </tr>
-                        </thead>
-                        <tbody id="hfMapTableBody"></tbody>
-                    </table>
-                    <button class="btn-secondary" id="addHfMapRow" style="margin-top: 12px; width: 100%;">+ 添加映射</button>
-                </div>
-                <div style="padding: 16px; border-top: 1px solid var(--border-color); text-align: right; display: flex; justify-content: flex-end; gap: 8px;">
-                    <button class="btn-secondary" id="cancelHfMap">取消</button>
-                    <button class="btn-primary" id="saveHfMap">保存</button>
-                </div>
-            </div>
-        `;
-    document.body.appendChild(hfMapModal);
-
-    // Bind events
-    hfMapModal.querySelector("#closeHfMapModal").onclick = closeHfMapModal;
-    hfMapModal.querySelector("#cancelHfMap").onclick = closeHfMapModal;
-    hfMapModal.querySelector("#addHfMapRow").onclick = () => addMapRow();
-    hfMapModal.querySelector("#saveHfMap").onclick = saveHfMap;
-  }
-
-  // 3. Render Table
-  const tbody = hfMapModal.querySelector("#hfMapTableBody");
-  tbody.innerHTML = "";
-
-  // Sort keys for consistent display
-  Object.keys(currentMap).sort().forEach((model) => {
-    const url = currentMap[model].main;
-    addMapRow(model, url);
-  });
-
-  // Add empty row if empty
-  if (Object.keys(currentMap).length === 0) {
-    addMapRow();
-  }
-
-  hfMapModal.style.display = "flex";
-}
-
-function closeHfMapModal() {
-  if (hfMapModal) hfMapModal.style.display = "none";
-}
-
-function addMapRow(model = "", url = "") {
-  const tbody = document.getElementById("hfMapTableBody");
-  if (!tbody) return;
-
-  const tr = document.createElement("tr");
-  tr.innerHTML = `
-        <td style="padding: 4px;">
-            <input type="text" class="form-control map-model" value="${model}" placeholder="e.g. flux-schnell" style="width: 100%;">
-        </td>
-        <td style="padding: 4px;">
-            <input type="text" class="form-control map-url" value="${url}" placeholder="https://...hf.space" style="width: 100%;">
-        </td>
-        <td style="padding: 4px; text-align: center;">
-            <button class="btn-text btn-delete-row" style="color: var(--danger); font-size: 18px; cursor: pointer;">&times;</button>
-        </td>
-    `;
-
-  const delBtn = tr.querySelector(".btn-delete-row");
-  delBtn.onclick = () => tr.remove();
-
-  tbody.appendChild(tr);
-}
-
-async function saveHfMap() {
-  const rows = document.querySelectorAll("#hfMapTableBody tr");
-  const newMap = {};
-
-  rows.forEach((row) => {
-    const modelInput = row.querySelector(".map-model");
-    const urlInput = row.querySelector(".map-url");
-    if (modelInput && urlInput) {
-      const model = modelInput.value.trim();
-      const url = urlInput.value.trim();
-
-      if (model && url) {
-        newMap[model] = { main: url };
-      }
-    }
-  });
-
-  try {
-    const res = await apiFetch("/api/config/hf-map", {
-      method: "POST",
-      body: JSON.stringify(newMap),
-    });
-
-    if (res.ok) {
-      // alert("保存成功"); // Optional
-      closeHfMapModal();
-    } else {
-      alert("保存失败");
-    }
-  } catch (e) {
-    console.error(e);
-    alert("保存出错");
-  }
-}

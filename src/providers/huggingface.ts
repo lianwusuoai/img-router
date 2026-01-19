@@ -15,16 +15,9 @@ import {
   type ProviderName,
 } from "./base.ts";
 import type { GenerationResult, ImageGenerationRequest } from "../types/index.ts";
-import {
-  getHfModelMap,
-  getRuntimeConfig,
-  HuggingFaceConfig,
-} from "../config/manager.ts";
+import { getHfModelMap, getRuntimeConfig, HuggingFaceConfig } from "../config/manager.ts";
 import { fetchWithTimeout } from "../utils/index.ts";
-import {
-  info,
-  warn,
-} from "../core/logger.ts";
+import { info, warn } from "../core/logger.ts";
 import { keyManager } from "../core/key-manager.ts";
 
 // ==========================================
@@ -61,14 +54,14 @@ const ZImageAdapter: HFModelAdapter = {
   constructPayload: (prompt, { width, height, seed, steps }) => {
     // Z-Image Turbo 参数: [prompt, height, width, steps, seed, randomize_seed]
     return [
-        prompt,
-        height,
-        width,
-        steps,
-        seed || Math.floor(Math.random() * 1000000),
-        !seed
+      prompt,
+      height,
+      width,
+      steps,
+      seed || Math.floor(Math.random() * 1000000),
+      !seed,
     ];
-  }
+  },
 };
 
 const GenericAdapter: HFModelAdapter = {
@@ -99,37 +92,37 @@ function getAdapter(model: string): HFModelAdapter {
 // ==========================================
 
 interface SSEEvent {
-    type: string;
-    data?: unknown;
+  type: string;
+  data?: unknown;
 }
 
 function parseSSEData(sseText: string): SSEEvent[] {
-    const events: SSEEvent[] = [];
-    const lines = sseText.split('\n');
-    let currentType = '';
+  const events: SSEEvent[] = [];
+  const lines = sseText.split("\n");
+  let currentType = "";
 
-    for (const line of lines) {
-        if (line.startsWith('event:')) {
-            currentType = line.substring(6).trim();
-        } else if (line.startsWith('data:')) {
-            const dataStr = line.substring(5).trim();
-            if (currentType === 'error') {
-                 // 抛出包含特定标识的错误，以便上层捕获
-                 throw new Error(`HF_SSE_ERROR: ${dataStr}`);
-            }
-            if (currentType === 'complete') {
-                try {
-                    events.push({ type: 'complete', data: JSON.parse(dataStr) });
-                } catch (e) {
-                    warn(
-                      "HuggingFace",
-                      `SSE JSON parse error: ${e instanceof Error ? e.message : String(e)}`,
-                    );
-                }
-            }
+  for (const line of lines) {
+    if (line.startsWith("event:")) {
+      currentType = line.substring(6).trim();
+    } else if (line.startsWith("data:")) {
+      const dataStr = line.substring(5).trim();
+      if (currentType === "error") {
+        // 抛出包含特定标识的错误，以便上层捕获
+        throw new Error(`HF_SSE_ERROR: ${dataStr}`);
+      }
+      if (currentType === "complete") {
+        try {
+          events.push({ type: "complete", data: JSON.parse(dataStr) });
+        } catch (e) {
+          warn(
+            "HuggingFace",
+            `SSE JSON parse error: ${e instanceof Error ? e.message : String(e)}`,
+          );
         }
+      }
     }
-    return events;
+  }
+  return events;
 }
 
 // ==========================================
@@ -176,27 +169,31 @@ export class HuggingFaceProvider extends BaseProvider {
   ): Promise<GenerationResult> {
     const { model, prompt, size, n: _n } = request;
     // 使用配置中的默认尺寸作为兜底
-    const defaultWidth = this.config.defaultSize ? parseInt(this.config.defaultSize.split("x")[0]) : 1024;
-    const defaultHeight = this.config.defaultSize ? parseInt(this.config.defaultSize.split("x")[1]) : 1024;
-    
+    const defaultWidth = this.config.defaultSize
+      ? parseInt(this.config.defaultSize.split("x")[0])
+      : 1024;
+    const defaultHeight = this.config.defaultSize
+      ? parseInt(this.config.defaultSize.split("x")[1])
+      : 1024;
+
     const [width, height] = size ? size.split("x").map(Number) : [defaultWidth, defaultHeight];
 
     // 1. 确定 API URL
     // 优先使用 model 对应的 Space URL (这里简化为硬编码或从配置读取)
     // 实际项目中建议建立 model -> url 的映射表
     let apiUrl = this.config.apiUrl;
-    
+
     // V4 升级：从动态配置读取 URL 映射
     // 动态获取映射
     const runtimeMap = getHfModelMap();
-    
+
     if (model && runtimeMap[model]) {
-        apiUrl = runtimeMap[model].main;
-        // 备份 URL 逻辑可以在重试时使用，暂时只用 main
+      apiUrl = runtimeMap[model].main;
+      // 备份 URL 逻辑可以在重试时使用，暂时只用 main
     } else if (model?.includes("flux") && model?.includes("schnell")) {
-        apiUrl = "https://black-forest-labs-flux-1-schnell.hf.space";
+      apiUrl = "https://black-forest-labs-flux-1-schnell.hf.space";
     } else if (model?.includes("z-image")) {
-        apiUrl = "https://luca115-z-image-turbo.hf.space";
+      apiUrl = "https://luca115-z-image-turbo.hf.space";
     }
     // ... 更多映射
 
@@ -210,95 +207,98 @@ export class HuggingFaceProvider extends BaseProvider {
     const defaultSteps = hfRuntime.defaultSteps || this.config.defaultSteps || 4;
     const steps = typeof request.steps === "number" ? request.steps : defaultSteps;
     const payload = {
-        data: adapter.constructPayload(prompt, { width, height, seed, steps }),
+      data: adapter.constructPayload(prompt, { width, height, seed, steps }),
     };
 
     // 3. 执行带重试的请求
     return this.runWithTokenRetry(async (token) => {
-        const headers: Record<string, string> = { "Content-Type": "application/json" };
-        if (token) {
-            headers["Authorization"] = `Bearer ${token}`;
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+      }
+
+      info(
+        "HuggingFace",
+        `Calling ${apiUrl} with model ${model} (Token: ${token ? "Yes" : "Anonymous"})`,
+      );
+
+      // Step A: Initiate Prediction
+      const predictUrl = `${apiUrl}/gradio_api/call/predict`; // 部分 Space 是 call/infer
+      const response = await fetchWithTimeout(predictUrl, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(payload),
+      });
+
+      if (response.status === 429) {
+        throw new Error("429 Too Many Requests");
+      }
+      if (!response.ok) {
+        throw new Error(`HF API Error: ${response.status} ${await response.text()}`);
+      }
+
+      const { event_id } = await response.json();
+
+      // Step B: Poll Result
+      const resultUrl = `${apiUrl}/gradio_api/call/predict/${event_id}`;
+      const resultResponse = await fetchWithTimeout(resultUrl, {
+        method: "GET",
+        headers, // 保持相同的 Auth
+      });
+
+      if (resultResponse.status === 429) {
+        throw new Error("429 Too Many Requests (Polling)");
+      }
+
+      const sseText = await resultResponse.text();
+
+      // Step C: Parse SSE
+      try {
+        const events = parseSSEData(sseText);
+        const completeEvent = events.find((e) => e.type === "complete");
+
+        if (completeEvent && completeEvent.data) {
+          // 解析结果
+          // 通常结果在 data[0].url
+          const resultData = completeEvent.data;
+          if (!Array.isArray(resultData) || resultData.length === 0) {
+            throw new Error("No image URL found in response");
+          }
+
+          const imgItem = resultData[0];
+
+          let imageUrl = "";
+          if (imgItem && typeof imgItem === "object" && "url" in imgItem) {
+            const url = (imgItem as Record<string, unknown>).url;
+            if (typeof url === "string") imageUrl = url;
+          } else if (typeof imgItem === "string") {
+            imageUrl = imgItem; // 有些直接返回 URL 字符串
+          }
+
+          if (!imageUrl) {
+            throw new Error("No image URL found in response");
+          }
+
+          return {
+            success: true,
+            images: [{ url: imageUrl }],
+            model: model || "unknown",
+            provider: this.name,
+          };
         }
-
-        info("HuggingFace", `Calling ${apiUrl} with model ${model} (Token: ${token ? 'Yes' : 'Anonymous'})`);
-
-        // Step A: Initiate Prediction
-        const predictUrl = `${apiUrl}/gradio_api/call/predict`; // 部分 Space 是 call/infer
-        const response = await fetchWithTimeout(predictUrl, {
-            method: "POST",
-            headers,
-            body: JSON.stringify(payload),
-        });
-
-        if (response.status === 429) {
-            throw new Error("429 Too Many Requests");
+        throw new Error("No complete event received");
+      } catch (e) {
+        if (e instanceof Error && e.message.includes("HF_SSE_ERROR")) {
+          // 服务端返回的明确错误
+          // 如果包含 quota/rate limit 相关的词，抛出 429
+          if (e.message.includes("quota") || e.message.includes("rate limit")) {
+            throw new Error("429 Quota Exhausted (SSE)");
+          }
+          // 否则视为不可重试的参数错误
+          throw new Error(`Generation Failed: ${e.message}`);
         }
-        if (!response.ok) {
-            throw new Error(`HF API Error: ${response.status} ${await response.text()}`);
-        }
-
-        const { event_id } = await response.json();
-        
-        // Step B: Poll Result
-        const resultUrl = `${apiUrl}/gradio_api/call/predict/${event_id}`;
-        const resultResponse = await fetchWithTimeout(resultUrl, {
-            method: "GET",
-            headers, // 保持相同的 Auth
-        });
-
-        if (resultResponse.status === 429) {
-             throw new Error("429 Too Many Requests (Polling)");
-        }
-
-        const sseText = await resultResponse.text();
-        
-        // Step C: Parse SSE
-        try {
-            const events = parseSSEData(sseText);
-            const completeEvent = events.find(e => e.type === 'complete');
-            
-            if (completeEvent && completeEvent.data) {
-                // 解析结果
-                // 通常结果在 data[0].url
-                const resultData = completeEvent.data;
-                if (!Array.isArray(resultData) || resultData.length === 0) {
-                  throw new Error("No image URL found in response");
-                }
-
-                const imgItem = resultData[0];
-                
-                let imageUrl = "";
-                if (imgItem && typeof imgItem === "object" && "url" in imgItem) {
-                    const url = (imgItem as Record<string, unknown>).url;
-                    if (typeof url === "string") imageUrl = url;
-                } else if (typeof imgItem === 'string') {
-                    imageUrl = imgItem; // 有些直接返回 URL 字符串
-                }
-
-                if (!imageUrl) {
-                    throw new Error("No image URL found in response");
-                }
-
-                return {
-                    success: true,
-                    images: [{ url: imageUrl }],
-                    model: model || "unknown",
-                    provider: this.name,
-                };
-            }
-             throw new Error("No complete event received");
-        } catch (e) {
-            if (e instanceof Error && e.message.includes("HF_SSE_ERROR")) {
-                 // 服务端返回的明确错误
-                 // 如果包含 quota/rate limit 相关的词，抛出 429
-                 if (e.message.includes("quota") || e.message.includes("rate limit")) {
-                     throw new Error("429 Quota Exhausted (SSE)");
-                 }
-                 // 否则视为不可重试的参数错误
-                 throw new Error(`Generation Failed: ${e.message}`);
-            }
-            throw e;
-        }
+        throw e;
+      }
     });
   }
 
@@ -306,39 +306,39 @@ export class HuggingFaceProvider extends BaseProvider {
    * 通用重试包装器
    */
   private async runWithTokenRetry<T>(operation: (token: string | null) => Promise<T>): Promise<T> {
-      let lastError: unknown;
-      
-      // 尝试逻辑：
-      // 1. 获取 Key (KeyManager 会处理是否返回 null/匿名)
-      // 2. 失败判断：如果是 429，标记 Key 并重试
-      // 3. 最大尝试次数：3次 (避免死循环)
-      
-      for (let i = 0; i < 3; i++) {
-          const token = keyManager.getNextKey(this.name);
-          
-          try {
-              return await operation(token);
-          } catch (e) {
-              lastError = e;
-              const message = e instanceof Error ? e.message : String(e);
-              const status = getErrorStatus(e);
-              const isRateLimit = message.includes("429") || status === 429;
-              
-              if (isRateLimit) {
-                  warn("HuggingFace", `Key ...${token?.slice(-4) || 'Anon'} rate limited. Switching...`);
-                  if (token) {
-                      keyManager.markKeyExhausted(this.name, token);
-                  }
-                  // Continue to next attempt
-                  continue;
-              }
-              
-              // 非 429 错误，直接抛出 (如参数错误)
-              throw e;
+    let lastError: unknown;
+
+    // 尝试逻辑：
+    // 1. 获取 Key (KeyManager 会处理是否返回 null/匿名)
+    // 2. 失败判断：如果是 429，标记 Key 并重试
+    // 3. 最大尝试次数：3次 (避免死循环)
+
+    for (let i = 0; i < 3; i++) {
+      const token = keyManager.getNextKey(this.name);
+
+      try {
+        return await operation(token);
+      } catch (e) {
+        lastError = e;
+        const message = e instanceof Error ? e.message : String(e);
+        const status = getErrorStatus(e);
+        const isRateLimit = message.includes("429") || status === 429;
+
+        if (isRateLimit) {
+          warn("HuggingFace", `Key ...${token?.slice(-4) || "Anon"} rate limited. Switching...`);
+          if (token) {
+            keyManager.markKeyExhausted(this.name, token);
           }
+          // Continue to next attempt
+          continue;
+        }
+
+        // 非 429 错误，直接抛出 (如参数错误)
+        throw e;
       }
-      
-      throw lastError instanceof Error ? lastError : new Error(String(lastError));
+    }
+
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
   }
 }
 

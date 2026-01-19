@@ -9,10 +9,7 @@
  * - **Key 池管理**：直连模式下自动轮询 Key。
  */
 
-import {
-  getProviderTaskDefaults,
-  getSystemConfig,
-} from "../config/manager.ts";
+import { getProviderTaskDefaults, getSystemConfig } from "../config/manager.ts";
 import type { IProvider } from "../providers/base.ts";
 import type {
   GenerationResult,
@@ -24,8 +21,8 @@ import type {
 import { providerRegistry } from "../providers/registry.ts";
 import { buildDataUri, urlToBase64 } from "../utils/image.ts";
 import { debug, error, generateRequestId, info, logRequestEnd, warn } from "../core/logger.ts";
-import { weightedRouter } from "../core/router.ts";
-import { aiChatService } from "../core/ai-chat.ts";
+import { weightedRouter, type RouteStep } from "../core/router.ts";
+import { promptOptimizerService } from "../core/prompt-optimizer.ts";
 import { keyManager } from "../core/key-manager.ts";
 import { storageService } from "../core/storage.ts";
 
@@ -86,26 +83,40 @@ export async function handleImagesGenerations(req: Request): Promise<Response> {
     debug("HTTP", `Request Body: ${JSON.stringify(requestBody, null, 2)}`);
 
     // 2. 确定 Provider 执行计划
-    let providerPlan: IProvider[] = [];
+    let providerPlan: RouteStep[] = [];
     if (usingBackendMode) {
-        // Backend Mode: 使用权重路由
-        providerPlan = weightedRouter.getPlan("text", requestBody.model);
-        if (providerPlan.length === 0) {
-            return new Response(JSON.stringify({ error: "No available providers for text-to-image" }), {
-                status: 503,
-                headers: { "Content-Type": "application/json" },
-            });
-        }
-        info("Router", `Plan: ${providerPlan.map(p => p.name).join(" -> ")}`);
+      // Backend Mode: 使用权重路由 (包含重定向逻辑)
+      providerPlan = weightedRouter.getRoutePlan("text", requestBody.model);
+      if (providerPlan.length === 0) {
+        return new Response(JSON.stringify({ error: "No available providers for text-to-image" }), {
+          status: 503,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      info("Router", `Plan: ${providerPlan.map((s) => `${s.provider.name}(${s.model})`).join(" -> ")}`);
     } else {
-        // Relay Mode: 仅使用检测到的 Provider
-        if (detectedProvider) {
-            providerPlan = [detectedProvider];
+      // Relay Mode: 仅使用检测到的 Provider
+      if (detectedProvider) {
+        let targetModel = requestBody.model || "default";
+        // 在 Relay 模式下，我们也尝试解析模型别名，但仅限于该 Provider
+        const defaults = getProviderTaskDefaults(detectedProvider.name, "text");
+        if (defaults.modelMap === targetModel) {
+             // 如果请求的模型等于映射的别名，则使用默认模型或实际模型
+             // 这里有个问题：ProviderTaskDefaults 里没有存 realId，而是存的 override model
+             // 但我们的设计是 modelMap 只是个别名。
+             // 实际上，如果配置了 modelMap，我们应该假设用户想要的是 defaultModel (override model)
+             if (defaults.model) {
+                 targetModel = defaults.model;
+                 info("Router", `Relay Mode: Redirect model ${requestBody.model} -> ${targetModel}`);
+             }
         }
+        
+        providerPlan = [{ provider: detectedProvider, model: targetModel }];
+      }
     }
 
     if (providerPlan.length === 0) {
-        throw new Error("Internal Error: No provider plan generated");
+      throw new Error("Internal Error: No provider plan generated");
     }
 
     // 3. 执行计划 (级联故障转移)
@@ -114,80 +125,82 @@ export async function handleImagesGenerations(req: Request): Promise<Response> {
 
     // 原始 Prompt (用于 Intelligence 处理)
     const originalPrompt = requestBody.prompt || "";
-    
+
     // 遍历计划中的 Provider
-    for (const provider of providerPlan) {
-        try {
-            info("Router", `Attempting provider: ${provider.name}`);
+    for (const step of providerPlan) {
+      const provider = step.provider;
+      const targetModel = step.model;
 
-            // 3.1 AI 聊天增强 (AiChat Middleware)
-            // 获取该 Provider 的 AI 聊天配置
-            const defaults = getProviderTaskDefaults(provider.name, "text");
-            const aiChatConfig = defaults.aiChat || {};
-            
-            // 处理 Prompt
-            const processedPrompt = await aiChatService.processPrompt(originalPrompt, {
-                translate: aiChatConfig.translate,
-                expand: aiChatConfig.expand
-            });
+      try {
+        info("Router", `Attempting provider: ${provider.name} with model: ${targetModel}`);
 
-            if (processedPrompt !== originalPrompt) {
-                debug("AiChat", `Prompt optimized: ${processedPrompt.substring(0, 50)}...`);
-            }
+        // 3.1 提示词优化 (PromptOptimizer Middleware)
+        // 获取该 Provider 的提示词优化配置
+        const defaults = getProviderTaskDefaults(provider.name, "text");
+        const promptOptimizerConfig = defaults.promptOptimizer || {};
 
-            // 3.2 准备请求对象
-            const generationRequest: ImageGenerationRequest = {
-                ...requestBody,
-                prompt: processedPrompt,
-                images: [],
-                model: requestBody.model, 
-                // 从 Task Defaults 中补全 steps (如果请求中未包含)
-                steps: requestBody.steps || defaults.steps || undefined,
-            };
+        // 处理 Prompt
+        const processedPrompt = await promptOptimizerService.processPrompt(originalPrompt, {
+          translate: promptOptimizerConfig.translate,
+          expand: promptOptimizerConfig.expand,
+        });
 
-            // 3.3 获取 Key
-            let currentApiKey = apiKey; // Relay Mode 默认使用用户传入的 Key
-            
-            if (usingBackendMode) {
-                // Backend Mode: 从 KeyManager 获取
-                // 对于 HF，KeyManager 已经在 Provider 内部集成，传空字符串即可
-                // 对于其他 Provider (如 Gitee)，仍需获取
-                if (provider.name === "HuggingFace") {
-                    currentApiKey = ""; // HF 内部处理
-                } else {
-                    const token = keyManager.getNextKey(provider.name);
-                    if (!token) {
-                        warn("Router", `Provider ${provider.name} has no available keys, skipping...`);
-                        lastError = new Error("No keys available");
-                        continue; // 尝试下一个 Provider
-                    }
-                    currentApiKey = token;
-                }
-            }
-
-            // 3.4 执行生成
-            const result = await provider.generate(currentApiKey, generationRequest, { requestId });
-            
-            if (result.success) {
-                successResult = result;
-                // 成功，跳出循环
-                break;
-            } else {
-                lastError = new Error(result.error || "Unknown error");
-                warn("Router", `Provider ${provider.name} failed: ${result.error}`);
-                // 继续下一个 Provider
-            }
-
-        } catch (e) {
-            const message = e instanceof Error ? e.message : String(e);
-            warn("Router", `Provider ${provider.name} exception: ${message}`);
-            lastError = e;
-            // 继续下一个 Provider
+        if (processedPrompt !== originalPrompt) {
+          debug("PromptOptimizer", `Prompt optimized: ${processedPrompt.substring(0, 50)}...`);
         }
+
+        // 3.2 准备请求对象
+        const generationRequest: ImageGenerationRequest = {
+          ...requestBody,
+          prompt: processedPrompt,
+          images: [],
+          model: targetModel === "auto" ? (defaults.model || undefined) : targetModel,
+          // 从 Task Defaults 中补全 steps (如果请求中未包含)
+          steps: requestBody.steps || defaults.steps || undefined,
+        };
+
+        // 3.3 获取 Key
+        let currentApiKey = apiKey; // Relay Mode 默认使用用户传入的 Key
+
+        if (usingBackendMode) {
+          // Backend Mode: 从 KeyManager 获取
+          // 对于 HF，KeyManager 已经在 Provider 内部集成，传空字符串即可
+          // 对于其他 Provider (如 Gitee)，仍需获取
+          if (provider.name === "HuggingFace") {
+            currentApiKey = ""; // HF 内部处理
+          } else {
+            const token = keyManager.getNextKey(provider.name);
+            if (!token) {
+              warn("Router", `Provider ${provider.name} has no available keys, skipping...`);
+              lastError = new Error("No keys available");
+              continue; // 尝试下一个 Provider
+            }
+            currentApiKey = token;
+          }
+        }
+
+        // 3.4 执行生成
+        const result = await provider.generate(currentApiKey, generationRequest, { requestId });
+
+        if (result.success) {
+          successResult = result;
+          // 成功，跳出循环
+          break;
+        } else {
+          lastError = new Error(result.error || "Unknown error");
+          warn("Router", `Provider ${provider.name} failed: ${result.error}`);
+          // 继续下一个 Provider
+        }
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        warn("Router", `Provider ${provider.name} exception: ${message}`);
+        lastError = e;
+        // 继续下一个 Provider
+      }
     }
 
     if (!successResult) {
-        throw lastError || new Error("All providers failed");
+      throw lastError || new Error("All providers failed");
     }
 
     const generationResult = successResult!;
@@ -209,58 +222,58 @@ export async function handleImagesGenerations(req: Request): Promise<Response> {
     const data: ImageData[] = [];
 
     for (const img of images) {
-        // 保存到本地存储
-        try {
-            let base64ToSave = "";
-            if (img.b64_json) {
-                base64ToSave = img.b64_json;
-            } else if (img.url) {
-                // 如果是 URL，尝试下载并转换为 Base64 保存
-                try {
-                    const { base64 } = await urlToBase64(img.url);
-                    base64ToSave = base64;
-                } catch (e) {
-                    warn("Storage", `Failed to download image for storage: ${e}`);
-                }
-            }
-
-            if (base64ToSave) {
-                // 异步保存，不阻塞响应
-                storageService.saveImage(base64ToSave, {
-                    prompt: requestBody.prompt,
-                    model: requestBody.model || "unknown",
-                    params: {
-                        size: requestBody.size,
-                        n: requestBody.n,
-                        steps: requestBody.steps,
-                    }
-                }).then((filename: string | null) => {
-                    if (filename) info("Storage", `Auto-saved image: ${filename}`);
-                });
-            }
-        } catch (e) {
-            warn("Storage", `Failed to save image: ${e}`);
+      // 保存到本地存储
+      try {
+        let base64ToSave = "";
+        if (img.b64_json) {
+          base64ToSave = img.b64_json;
+        } else if (img.url) {
+          // 如果是 URL，尝试下载并转换为 Base64 保存
+          try {
+            const { base64 } = await urlToBase64(img.url);
+            base64ToSave = base64;
+          } catch (e) {
+            warn("Storage", `Failed to download image for storage: ${e}`);
+          }
         }
 
-        // ... (保持原有的格式转换逻辑)
-        if (desiredFormat === "b64_json") {
-            if (img.b64_json) {
-                data.push({ b64_json: img.b64_json });
-            } else if (img.url) {
-                try {
-                    const { base64 } = await urlToBase64(img.url);
-                    data.push({ b64_json: base64 });
-                } catch (_e) {
-                    data.push({ url: img.url });
-                }
-            }
-        } else {
-             if (img.url) {
-                data.push({ url: img.url });
-            } else if (img.b64_json) {
-                data.push({ url: buildDataUri(img.b64_json, "image/png") });
-            }
+        if (base64ToSave) {
+          // 异步保存，不阻塞响应
+          storageService.saveImage(base64ToSave, {
+            prompt: requestBody.prompt,
+            model: requestBody.model || "unknown",
+            params: {
+              size: requestBody.size,
+              n: requestBody.n,
+              steps: requestBody.steps,
+            },
+          }).then((filename: string | null) => {
+            if (filename) info("Storage", `Auto-saved image: ${filename}`);
+          });
         }
+      } catch (e) {
+        warn("Storage", `Failed to save image: ${e}`);
+      }
+
+      // ... (保持原有的格式转换逻辑)
+      if (desiredFormat === "b64_json") {
+        if (img.b64_json) {
+          data.push({ b64_json: img.b64_json });
+        } else if (img.url) {
+          try {
+            const { base64 } = await urlToBase64(img.url);
+            data.push({ b64_json: base64 });
+          } catch (_e) {
+            data.push({ url: img.url });
+          }
+        }
+      } else {
+        if (img.url) {
+          data.push({ url: img.url });
+        } else if (img.b64_json) {
+          data.push({ url: buildDataUri(img.b64_json, "image/png") });
+        }
+      }
     }
 
     const responseBody: ImagesResponse = {
@@ -277,14 +290,16 @@ export async function handleImagesGenerations(req: Request): Promise<Response> {
         "Access-Control-Allow-Origin": "*",
       },
     });
-
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);
     error("Proxy", `请求处理错误: ${errorMessage}`);
     logRequestEnd(requestId, req.method, url.pathname, 500, Date.now() - startTime, errorMessage);
-    return new Response(JSON.stringify({ error: { message: errorMessage, type: "server_error" } }), {
-      status: 500,
-      headers: { "Content-Type": "application/json" },
-    });
+    return new Response(
+      JSON.stringify({ error: { message: errorMessage, type: "server_error" } }),
+      {
+        status: 500,
+        headers: { "Content-Type": "application/json" },
+      },
+    );
   }
 }

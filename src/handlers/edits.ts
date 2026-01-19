@@ -15,9 +15,7 @@
  */
 
 import { encodeBase64 } from "@std/encoding/base64";
-import {
-  getProviderTaskDefaults,
-} from "../config/manager.ts";
+import { getProviderTaskDefaults } from "../config/manager.ts";
 import type {
   ImageData,
   ImageGenerationRequest,

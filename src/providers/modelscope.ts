@@ -118,7 +118,7 @@ export class ModelScopeProvider extends BaseProvider {
         } else {
           return await this.handleTextToImage(apiKey, singleRequest, options, startTime);
         }
-      }
+      },
     );
   }
 
@@ -247,7 +247,10 @@ export class ModelScopeProvider extends BaseProvider {
     // 此时的 request.n 已经是拆分后的值 (通常为 1)
     const n = request.n || 1;
 
-    info("ModelScope", `使用图生图/融合模式, 模型: ${model}, 图片数量: ${request.images.length}, n: ${n}`);
+    info(
+      "ModelScope",
+      `使用图生图/融合模式, 模型: ${model}, 图片数量: ${request.images.length}, n: ${n}`,
+    );
     logImageGenerationStart("ModelScope", options.requestId, model, size, request.prompt.length);
 
     // 处理输入图片：上传到图床获取 URL

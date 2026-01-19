@@ -195,11 +195,20 @@ export async function renderUpdate(container) {
     const localVersion = normalizeVersion(localVersionRaw);
 
     // 2. 获取 GitHub 最新版本
-    const response = await fetch(
-      "https://api.github.com/repos/lianwusuoai/img-router/releases/latest",
-    );
+    const response = await apiFetch("/api/update/check");
     if (!response.ok) {
-      throw new Error(`GitHub API 请求失败: ${response.status}`);
+      let errorDetail = "";
+      try {
+        const errJson = await response.json();
+        if (errJson.error === "rate_limit") {
+          throw new Error("GitHub API 访问受限 (403)。请稍后（约1小时）再试。");
+        }
+        errorDetail = errJson.message || errJson.error || response.statusText;
+      } catch (e) {
+        if (e.message.includes("GitHub API")) throw e;
+        errorDetail = response.statusText;
+      }
+      throw new Error(`GitHub API 请求失败: ${response.status} (${errorDetail})`);
     }
     const release = await response.json();
     const latestVersion = release.tag_name ? release.tag_name.replace(/^v/, "") : "0.0.0";

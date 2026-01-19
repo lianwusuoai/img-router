@@ -179,8 +179,8 @@ class ProviderRegistry {
    */
   getAll(): IProvider[] {
     return Array.from(this.registrations.values())
-      .filter(reg => reg.enabled)
-      .map(reg => reg.instance);
+      .filter((reg) => reg.enabled)
+      .map((reg) => reg.instance);
   }
 
   /**

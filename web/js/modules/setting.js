@@ -139,31 +139,7 @@ export async function renderSetting(container) {
             </div>
         </div>
 
-        <div class="card">
-            <div class="card-header">
-                <h3 class="card-title">智能增强 (AiChat)</h3>
-            </div>
-            <div class="form-section" style="padding: 16px;">
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px;">
-                    <div class="form-group" style="margin-bottom: 0;">
-                        <label class="form-label">API Base URL</label>
-                        <input type="text" id="aiChatBaseUrl" class="form-control" placeholder="https://api.openai.com/v1">
-                    </div>
-                    <div class="form-group" style="margin-bottom: 0;">
-                        <label class="form-label">Model</label>
-                        <input type="text" id="aiChatModel" class="form-control" placeholder="gpt-3.5-turbo">
-                    </div>
-                </div>
-                <div class="form-group" style="margin-bottom: 0;">
-                    <label class="form-label">API Key</label>
-                    <input type="password" id="aiChatApiKey" class="form-control" placeholder="sk-...">
-                </div>
-                <div class="help-text" style="font-size: 12px; color: var(--text-secondary); margin-top: 8px;">
-                    配置兼容 OpenAI 格式的 LLM 服务，用于 Prompt 翻译、优化和扩充。
-                </div>
-            </div>
-        </div>
-        
+
         <style>
             .switch-group-inline {
                 display: flex;
@@ -252,21 +228,6 @@ async function loadSystemSettings() {
     // 图片压缩设置 (从 runtimeConfig 读取)
     document.getElementById("compressThreshold").value = runtimeSystem.compressThreshold || 5;
     document.getElementById("compressTarget").value = runtimeSystem.compressTarget || 2;
-
-    // 加载 AiChat 配置
-    try {
-        const resChat = await apiFetch("/api/config/ai-chat");
-        if (resChat.ok) {
-            const chatConfig = await resChat.json();
-            if (chatConfig) {
-                document.getElementById("aiChatBaseUrl").value = chatConfig.baseUrl || "";
-                document.getElementById("aiChatApiKey").value = chatConfig.apiKey || ""; // Will be ******
-                document.getElementById("aiChatModel").value = chatConfig.model || "";
-            }
-        }
-    } catch (e) {
-        console.error("Failed to load AiChat settings:", e);
-    }
   } catch (e) {
     console.error("Failed to load settings:", e);
   }
@@ -310,28 +271,48 @@ async function saveSystemSettings() {
       // 图片压缩配置 (扁平化存储以匹配后端 SystemConfig)
       compressThreshold: Number(document.getElementById("compressThreshold").value),
       compressTarget: Number(document.getElementById("compressTarget").value),
+
+      // 功能特性
+      features: {
+        autoConvertWebP: document.getElementById("autoConvertWebP").checked,
+      },
+    };
+
+    // 构建 S3 配置
+    const s3Config = {
+      endpoint: document.getElementById("s3Endpoint").value,
+      region: document.getElementById("s3Region").value,
+      bucket: document.getElementById("s3Bucket").value,
+      accessKey: document.getElementById("s3AccessKey").value,
+      secretKey: document.getElementById("s3SecretKey").value,
+      publicUrl: document.getElementById("s3PublicUrl").value,
+    };
+
+    // 如果 S3 关键字段不为空，则更新 storage 配置
+    // 注意：这里需要确保后端支持接收 storage 字段的更新，目前 /api/runtime-config 接收 { system: ... }
+    // 我们需要调整后端 app.ts 或者在此处构造正确的 payload
+    // 查看 app.ts，/api/runtime-config 接收 { system, providers }
+    // 我们需要把 storage 放入 payload 的顶层（如果后端支持）或者 system 中？
+    // 检查 app.ts，runtimeConfig 结构是 { system, providers, keyPools, storage }
+    // app.ts 的 POST 处理逻辑:
+    // const nextConfig = { ...current.providers, ...current.system, ... }
+    // 它只处理了 system 和 providers 的 patch
+    // 我们需要修改 app.ts 来支持 storage 的更新
+
+    // 这里先构造 payload，稍后（或同时）去修改 app.ts
+    const payload = {
+      system: systemConfig,
+      storage: {
+        s3: s3Config.endpoint ? s3Config : undefined,
+      },
     };
 
     // 发送运行时配置更新
     await apiFetch("/api/runtime-config", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ system: systemConfig }),
+      body: JSON.stringify(payload),
     });
-
-    // 保存 AiChat 配置
-    const aiChatBaseUrl = document.getElementById("aiChatBaseUrl").value;
-    if (aiChatBaseUrl) {
-        await apiFetch("/api/config/ai-chat", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                baseUrl: aiChatBaseUrl,
-                apiKey: document.getElementById("aiChatApiKey").value,
-                model: document.getElementById("aiChatModel").value
-            }),
-        });
-    }
 
     if (statusDot) {
       statusDot.style.background = "var(--success)";

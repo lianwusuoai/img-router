@@ -19,8 +19,8 @@ import * as Config from "./config/manager.ts";
 import {
   getKeyPool,
   getRuntimeConfig,
-  replaceRuntimeConfig,
   type ProviderTaskDefaults,
+  replaceRuntimeConfig,
   type RuntimeConfig,
   type RuntimeProviderConfig,
   setProviderEnabled,
@@ -30,12 +30,126 @@ import {
 } from "./config/manager.ts";
 import { providerRegistry } from "./providers/registry.ts";
 console.log("Loading app.ts...");
-import { aiChatService } from "./core/ai-chat.ts";
+import { promptOptimizerService } from "./core/prompt-optimizer.ts";
 import { storageService } from "./core/storage.ts";
 import type { ProviderName } from "./providers/base.ts";
 
-// 调试日志：确保 aiChatService 已加载
-console.log("[App] aiChatService loaded:", !!aiChatService);
+// 调试日志：确保 promptOptimizerService 已加载
+console.log("[App] promptOptimizerService loaded:", !!promptOptimizerService);
+
+// GitHub 更新检查缓存
+interface UpdateCache {
+  data: unknown;
+  timestamp: number;
+}
+let updateCache: UpdateCache | null = null;
+const UPDATE_CACHE_TTL = 3600 * 1000; // 1 hour
+const CACHE_FILE_PATH = "./data/update_cache.json";
+
+// 从磁盘加载缓存
+async function loadCacheFromDisk() {
+  try {
+    const text = await Deno.readTextFile(CACHE_FILE_PATH);
+    const cache = JSON.parse(text) as UpdateCache;
+    if (cache && cache.timestamp) {
+      updateCache = cache;
+      info("Update", "Loaded update cache from disk");
+    }
+  } catch (_e) {
+    // Ignore error (file not found or invalid)
+  }
+}
+
+// 保存缓存到磁盘
+async function saveCacheToDisk(cache: UpdateCache) {
+  try {
+    await Deno.writeTextFile(CACHE_FILE_PATH, JSON.stringify(cache));
+  } catch (e) {
+    warn("Update", `Failed to save cache to disk: ${e}`);
+  }
+}
+
+/**
+ * 处理更新检查请求
+ * 通过后端代理请求 GitHub API，避免前端直接请求导致的 CORS 和限流问题
+ */
+async function handleUpdateCheck(req: Request): Promise<Response> {
+  const now = Date.now();
+  const url = new URL(req.url);
+  const force = url.searchParams.get("force") === "true";
+
+  // 尝试加载磁盘缓存（如果内存缓存为空）
+  if (!updateCache) {
+    await loadCacheFromDisk();
+  }
+
+  // 检查有效缓存 (非强制刷新且缓存有效)
+  if (!force && updateCache && (now - updateCache.timestamp < UPDATE_CACHE_TTL)) {
+    return new Response(JSON.stringify(updateCache.data), {
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  try {
+    const res = await fetch("https://api.github.com/repos/lianwusuoai/img-router/releases/latest", {
+      headers: {
+        "User-Agent": "img-router/1.0",
+        "Accept": "application/vnd.github.v3+json",
+      },
+    });
+
+    if (!res.ok) {
+      // 403 限流或其他错误
+      warn("Update", `GitHub API failed (${res.status}), trying fallback.`);
+      
+      // 如果有缓存（即使过期），作为降级返回
+      if (updateCache) {
+        warn("Update", "Serving stale cache due to API error.");
+        return new Response(JSON.stringify({
+          ...(updateCache.data as object),
+          _cached: true,
+          _stale: true
+        }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      
+      // 明确返回限流错误，状态码 200 以便前端解析
+      return new Response(JSON.stringify({ 
+        error: "rate_limit", 
+        message: `GitHub API error: ${res.status}` 
+      }), {
+        status: res.status === 403 ? 429 : 502,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    const data = await res.json();
+    const newCache = { data, timestamp: now };
+    updateCache = newCache;
+    await saveCacheToDisk(newCache); // 持久化
+    
+    return new Response(JSON.stringify(data), {
+      headers: { "Content-Type": "application/json" },
+    });
+  } catch (e) {
+    warn("Update", `Check update failed: ${e}`);
+    // 降级：如果有缓存，返回陈旧缓存
+    if (updateCache) {
+      return new Response(JSON.stringify({
+        ...(updateCache.data as object),
+        _cached: true,
+        _stale: true
+      }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    return new Response(JSON.stringify({ error: String(e) }), {
+      status: 500,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+}
 
 import denoConfig from "../deno.json" with { type: "json" };
 
@@ -155,11 +269,27 @@ async function routeRequest(req: Request, ctx: RequestContext): Promise<Response
 
   // 静态页面（SPA 路由）
   // 所有前端路由都返回 index.html，由前端 Router 处理页面显示
-  const spaRoutes = ["/admin", "/setting", "/channel", "/keys", "/index", "/ui", "/", "/update", "/ai-chat", "/pic"];
+  const spaRoutes = [
+    "/admin",
+    "/setting",
+    "/channel",
+    "/keys",
+    "/index",
+    "/ui",
+    "/",
+    "/update",
+    "/prompt-optimizer",
+    "/pic",
+  ];
   const spaPath = (pathname.length > 1 && pathname.endsWith("/"))
     ? pathname.slice(0, -1)
     : pathname;
-  info("DEBUG", `Checking SPA route: path=${pathname}, spaPath=${spaPath}, match=${spaRoutes.includes(spaPath)}`);
+  info(
+    "DEBUG",
+    `Checking SPA route: path=${pathname}, spaPath=${spaPath}, match=${
+      spaRoutes.includes(spaPath)
+    }`,
+  );
   if (spaRoutes.includes(spaPath) && method === "GET") {
     try {
       const html = await Deno.readTextFile("web/index.html");
@@ -197,7 +327,7 @@ async function routeRequest(req: Request, ctx: RequestContext): Promise<Response
       const filePath = `data${pathname}`; // 映射到 data/storage/xxx
       const file = await Deno.open(filePath, { read: true });
       const stat = await file.stat();
-      
+
       const ext = pathname.split(".").pop()?.toLowerCase();
       let contentType = "application/octet-stream";
       if (ext === "png") contentType = "image/png";
@@ -212,23 +342,51 @@ async function routeRequest(req: Request, ctx: RequestContext): Promise<Response
         },
       });
     } catch (_e) {
-      // warn("HTTP", `无法加载存储资源 ${pathname}: ${e}`);
-      return handleNotFound();
-    }
+        // warn("HTTP", `无法加载存储资源 ${pathname}: ${e}`);
+        return handleNotFound();
+      }
   }
 
   // 画廊 API
-  if (pathname === "/api/gallery" && method === "GET") {
-    try {
-      const images = await storageService.listImages();
-      return new Response(JSON.stringify(images), {
-        headers: { "Content-Type": "application/json" },
-      });
-    } catch (e) {
-      return new Response(JSON.stringify({ error: String(e) }), {
-        status: 500,
-        headers: { "Content-Type": "application/json" },
-      });
+  if (pathname === "/api/gallery") {
+    if (method === "GET") {
+      try {
+        const images = await storageService.listImages();
+        return new Response(JSON.stringify(images), {
+          headers: { "Content-Type": "application/json" },
+        });
+      } catch (e) {
+        return new Response(JSON.stringify({ error: String(e) }), {
+          status: 500,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+    }
+
+    if (method === "DELETE") {
+      try {
+        const body = await req.json();
+        if (!body || !Array.isArray(body.filenames)) {
+          return new Response(
+            JSON.stringify({ error: "Invalid body: filenames must be an array" }),
+            {
+              status: 400,
+              headers: { "Content-Type": "application/json" },
+            },
+          );
+        }
+
+        const deleted = await storageService.deleteImages(body.filenames);
+
+        return new Response(JSON.stringify({ ok: true, deleted }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      } catch (e) {
+        return new Response(JSON.stringify({ error: String(e) }), {
+          status: 500,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
     }
   }
 
@@ -245,6 +403,11 @@ async function routeRequest(req: Request, ctx: RequestContext): Promise<Response
         headers: { "Content-Type": "application/json" },
       },
     );
+  }
+
+  // 系统更新检查 API
+  if (pathname === "/api/update/check" && method === "GET") {
+    return handleUpdateCheck(req);
   }
 
   // CORS 预检请求
@@ -440,32 +603,35 @@ async function routeRequest(req: Request, ctx: RequestContext): Promise<Response
         Config.ALL_TEXT_MODELS.forEach((m) => allModels.add(m));
 
         const names = providerRegistry.getNames();
-        
+
         for (const name of names) {
           if (!providerRegistry.has(name)) continue;
           const provider = providerRegistry.get(name);
           if (provider) {
-             const models = provider.getSupportedModels();
-             models.forEach(m => allModels.add(m));
+            const models = provider.getSupportedModels();
+            models.forEach((m) => allModels.add(m));
           }
         }
 
-        const modelList = Array.from(allModels).map(id => ({
+        const modelList = Array.from(allModels).map((id) => ({
           id,
           object: "model",
           created: Math.floor(Date.now() / 1000),
-          owned_by: "img-router"
+          owned_by: "img-router",
         }));
 
-        return new Response(JSON.stringify({
-          object: "list",
-          data: modelList
-        }), {
-          headers: { 
-            "Content-Type": "application/json",
-            ...corsHeaders
+        return new Response(
+          JSON.stringify({
+            object: "list",
+            data: modelList,
+          }),
+          {
+            headers: {
+              "Content-Type": "application/json",
+              ...corsHeaders,
+            },
           },
-        });
+        );
       }
       return handleMethodNotAllowed(method);
 
@@ -676,6 +842,7 @@ async function routeRequest(req: Request, ctx: RequestContext): Promise<Response
           providers: { ...current.providers },
           system: { ...current.system },
           keyPools: current.keyPools || {},
+          storage: current.storage || {},
         };
 
         // 处理系统配置更新
@@ -731,6 +898,15 @@ async function routeRequest(req: Request, ctx: RequestContext): Promise<Response
               };
             }
 
+            changed = true;
+          }
+        }
+
+        // 处理存储配置更新 (Storage Config)
+        if (isRecord(body) && "storage" in body) {
+          const storageVal = body.storage;
+          if (isRecord(storageVal)) {
+            nextConfig.storage = { ...nextConfig.storage, ...storageVal };
             changed = true;
           }
         }
@@ -808,11 +984,11 @@ async function routeRequest(req: Request, ctx: RequestContext): Promise<Response
           weight: ("weight" in defaults ? defaults.weight : undefined) as number | undefined,
         };
 
-        const aiChat = defaults.aiChat;
-        if (isRecord(aiChat)) {
-          taskDefaults.aiChat = {
-            translate: typeof aiChat.translate === "boolean" ? aiChat.translate : undefined,
-            expand: typeof aiChat.expand === "boolean" ? aiChat.expand : undefined,
+        const promptOptimizer = defaults.promptOptimizer;
+        if (isRecord(promptOptimizer)) {
+          taskDefaults.promptOptimizer = {
+            translate: typeof promptOptimizer.translate === "boolean" ? promptOptimizer.translate : undefined,
+            expand: typeof promptOptimizer.expand === "boolean" ? promptOptimizer.expand : undefined,
           };
         }
 
@@ -824,11 +1000,11 @@ async function routeRequest(req: Request, ctx: RequestContext): Promise<Response
       }
       return handleMethodNotAllowed(method);
 
-    // 管理 API: AI 聊天服务配置
-    case "/api/config/ai-chat":
+    // 管理 API: 提示词优化器配置
+    case "/api/config/prompt-optimizer":
       if (method === "GET") {
-        const config = Config.getAiChatConfig();
-        console.log("[API] GET /api/config/ai-chat", config);
+        const config = Config.getPromptOptimizerConfig();
+        console.log("[API] GET /api/config/prompt-optimizer", config);
         // 直接返回配置，不再脱敏 API Key，以便前端明文显示
         return new Response(JSON.stringify(config || {}), {
           headers: { "Content-Type": "application/json" },
@@ -853,10 +1029,14 @@ async function routeRequest(req: Request, ctx: RequestContext): Promise<Response
           });
         }
 
-        const current = Config.getAiChatConfig();
+        const current = Config.getPromptOptimizerConfig();
 
-        const nextBaseUrl = typeof body.baseUrl === "string" ? body.baseUrl : (current?.baseUrl ?? "");
-        const nextModel = typeof body.model === "string" ? body.model : (current?.model ?? "gpt-3.5-turbo");
+        const nextBaseUrl = typeof body.baseUrl === "string"
+          ? body.baseUrl
+          : (current?.baseUrl ?? "");
+        const nextModel = typeof body.model === "string"
+          ? body.model
+          : (current?.model ?? "");
 
         let nextApiKey: string = current?.apiKey ?? "";
         // 移除脱敏判断，始终更新 apiKey
@@ -867,13 +1047,17 @@ async function routeRequest(req: Request, ctx: RequestContext): Promise<Response
         const nextEnableTranslate = typeof body.enableTranslate === "boolean"
           ? body.enableTranslate
           : current?.enableTranslate;
-        const nextEnableExpand = typeof body.enableExpand === "boolean" ? body.enableExpand : current?.enableExpand;
+        const nextEnableExpand = typeof body.enableExpand === "boolean"
+          ? body.enableExpand
+          : current?.enableExpand;
         const nextTranslatePrompt = typeof body.translatePrompt === "string"
           ? body.translatePrompt
           : current?.translatePrompt;
-        const nextExpandPrompt = typeof body.expandPrompt === "string" ? body.expandPrompt : current?.expandPrompt;
+        const nextExpandPrompt = typeof body.expandPrompt === "string"
+          ? body.expandPrompt
+          : current?.expandPrompt;
 
-        Config.updateAiChatConfig({
+        Config.updatePromptOptimizerConfig({
           baseUrl: nextBaseUrl,
           apiKey: nextApiKey,
           model: nextModel,
@@ -895,11 +1079,11 @@ async function routeRequest(req: Request, ctx: RequestContext): Promise<Response
       if (method === "POST") {
         try {
           const body = await req.json();
-          
+
           // Debug logs to verify inputs
-          console.log("[API] fetch-models request:", { 
-            baseUrl: body.baseUrl, 
-            apiKey: body.apiKey ? (body.apiKey.substring(0, 8) + "...") : "empty" 
+          console.log("[API] fetch-models request:", {
+            baseUrl: body.baseUrl,
+            apiKey: body.apiKey ? (body.apiKey.substring(0, 8) + "...") : "empty",
           });
 
           if (!isRecord(body) || typeof body.baseUrl !== "string") {
@@ -909,11 +1093,11 @@ async function routeRequest(req: Request, ctx: RequestContext): Promise<Response
             });
           }
 
-          if (!aiChatService) {
-            throw new Error("aiChatService is not initialized");
+          if (!promptOptimizerService) {
+            throw new Error("promptOptimizerService is not initialized");
           }
 
-          const models = await aiChatService.fetchModels({
+          const models = await promptOptimizerService.fetchModels({
             baseUrl: body.baseUrl,
             apiKey: typeof body.apiKey === "string" ? body.apiKey : "",
           });
@@ -923,75 +1107,88 @@ async function routeRequest(req: Request, ctx: RequestContext): Promise<Response
           });
         } catch (e) {
           console.error("[API] Fetch models failed:", e);
-          return new Response(JSON.stringify({ ok: false, error: e instanceof Error ? e.message : String(e) }), {
-            status: 500,
-            headers: { "Content-Type": "application/json" },
-          });
+          return new Response(
+            JSON.stringify({ ok: false, error: e instanceof Error ? e.message : String(e) }),
+            {
+              status: 500,
+              headers: { "Content-Type": "application/json" },
+            },
+          );
         }
       }
       return handleMethodNotAllowed(method);
 
-    // 工具 API: 测试 AI Chat 连接
-    case "/api/tools/test-ai-chat":
+    // 工具 API: 测试 Prompt Optimizer 连接
+    case "/api/tools/test-prompt-optimizer":
       if (method === "POST") {
         try {
           const body = await req.json();
           // 如果是脱敏的 key，尝试从配置中获取真实的 key
           if (body.apiKey === "******") {
-            const current = Config.getAiChatConfig();
+            const current = Config.getPromptOptimizerConfig();
             if (current?.apiKey) {
               body.apiKey = current.apiKey;
             }
           }
 
           if (!body.baseUrl || !body.apiKey) {
-             return new Response(JSON.stringify({ error: "Missing parameters" }), {
+            return new Response(JSON.stringify({ error: "Missing parameters" }), {
               status: 400,
               headers: { "Content-Type": "application/json" },
             });
           }
 
-          if (!aiChatService) {
-             throw new Error("aiChatService is not initialized");
+          if (!promptOptimizerService) {
+            throw new Error("promptOptimizerService is not initialized");
           }
 
-          const result = await aiChatService.testConnection({
+          const result = await promptOptimizerService.testConnection({
             baseUrl: body.baseUrl,
             apiKey: body.apiKey,
-            model: body.model || "gpt-3.5-turbo",
+            model: body.model || "",
           });
 
-          return new Response(JSON.stringify({ ok: true, message: result.reply, url: result.url, model: result.model }), {
-            headers: { "Content-Type": "application/json" },
-          });
+          return new Response(
+            JSON.stringify({
+              ok: true,
+              message: result.reply,
+              url: result.url,
+              model: result.model,
+            }),
+            {
+              headers: { "Content-Type": "application/json" },
+            },
+          );
         } catch (e) {
-          return new Response(JSON.stringify({ ok: false, error: e instanceof Error ? e.message : String(e) }), {
-            status: 500,
-            headers: { "Content-Type": "application/json" },
-          });
+          return new Response(
+            JSON.stringify({ ok: false, error: e instanceof Error ? e.message : String(e) }),
+            {
+              status: 500,
+              headers: { "Content-Type": "application/json" },
+            },
+          );
         }
       }
       return handleMethodNotAllowed(method);
 
-
     // 管理 API: HF 模型映射配置
     case "/api/config/hf-map":
-        if (method === "POST") {
-            try {
-                const body = await req.json(); // Expected: Record<string, { main: string, backup?: string }>
-                if (typeof body !== 'object') {
-                    return new Response(JSON.stringify({ error: "Invalid body" }), { status: 400 });
-                }
-                Config.updateHfModelMap(body);
-                return new Response(JSON.stringify({ ok: true }), { status: 200 });
-            } catch {
-                return new Response(JSON.stringify({ error: "Invalid JSON" }), { status: 400 });
-            }
+      if (method === "POST") {
+        try {
+          const body = await req.json(); // Expected: Record<string, { main: string, backup?: string }>
+          if (typeof body !== "object") {
+            return new Response(JSON.stringify({ error: "Invalid body" }), { status: 400 });
+          }
+          Config.updateHfModelMap(body);
+          return new Response(JSON.stringify({ ok: true }), { status: 200 });
+        } catch {
+          return new Response(JSON.stringify({ error: "Invalid JSON" }), { status: 400 });
         }
-        if (method === "GET") {
-            return new Response(JSON.stringify(Config.getHfModelMap()), { status: 200 });
-        }
-        return handleMethodNotAllowed(method);
+      }
+      if (method === "GET") {
+        return new Response(JSON.stringify(Config.getHfModelMap()), { status: 200 });
+      }
+      return handleMethodNotAllowed(method);
 
     default:
       return handleNotFound();

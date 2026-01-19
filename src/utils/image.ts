@@ -10,7 +10,7 @@
 
 import { ImageBedConfig } from "../config/manager.ts";
 import { fetchWithTimeout } from "./http.ts";
-// import { Image } from "imagescript"; // 暂时注释掉，如果未安装可能会报错
+import { Image } from "imagescript";
 
 /** URL 转 Base64 的结果接口 */
 export interface UrlToBase64Result {
@@ -240,6 +240,27 @@ export function formatFileSize(bytes: number): string {
   const sizes = ["B", "KB", "MB", "GB", "TB"];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
+}
+
+/**
+ * 将 WebP 转换为 PNG
+ * 使用 imagescript 库进行解码和重编码
+ *
+ * @param blob WebP 图片 Blob
+ * @returns PNG 图片 Blob
+ */
+export async function convertWebPToPNG(blob: Blob): Promise<Blob> {
+  // 1. 读取原始二进制数据
+  const arrayBuffer = await blob.arrayBuffer();
+  const uint8Array = new Uint8Array(arrayBuffer);
+
+  // 2. 解码并重编码为 PNG (压缩等级 2，平衡速度与体积)
+  const image = await Image.decode(uint8Array);
+  const pngBuffer = await image.encode(2);
+  const pngBytes = new Uint8Array(pngBuffer);
+
+  // 3. 返回 PNG Blob
+  return new Blob([pngBytes], { type: "image/png" });
 }
 
 /**
