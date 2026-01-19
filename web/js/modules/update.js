@@ -302,7 +302,7 @@ async function performCheck(isManual, contentDiv, checkBtn, badge) {
         try {
             hasUpdate = compareVersions(latestVersionNorm, localVersion) > 0;
         } catch (err) {
-            console.warn("Version comparison failed:", err);
+            console.error("Version comparison failed:", err);
         }
 
         // 成功获取，重置重试计数
@@ -428,7 +428,7 @@ function scheduleRetry(contentDiv, checkBtn, badge) {
     // 这样可以避免因持续失败导致的 429 限流问题。
     
     if (retryCount >= 1) {
-        console.warn("[AutoUpdate] Fast retry failed. Giving up and waiting for next scheduled hourly check.");
+        console.info("[AutoUpdate] Fast retry failed. Giving up and waiting for next scheduled hourly check.");
         retryCount = 0; // 重置计数，确保下一次定时检查如果失败，仍能触发一次快速重试
         return;
     }

@@ -1,5 +1,5 @@
 import { getKeyPool, getRuntimeConfig, replaceRuntimeConfig } from "../config/manager.ts";
-import { info, warn } from "./logger.ts";
+import { error, info } from "./logger.ts";
 
 /**
  * Key 管理器
@@ -111,7 +111,7 @@ export class KeyManager {
     if (item) {
       item.status = "rate_limited";
       item.lastUsed = Date.now();
-      warn(
+      info(
         "KeyManager",
         `Provider ${provider} Key ...${key.slice(-4)} 已标记为限流 (Rate Limited)`,
       );
@@ -133,7 +133,7 @@ export class KeyManager {
     if (item) {
       item.status = "disabled"; // 永久禁用
       item.enabled = false;
-      warn("KeyManager", `Provider ${provider} Key ...${key.slice(-4)} 无效，已禁用`);
+      error("KeyManager", `Provider ${provider} Key ...${key.slice(-4)} 无效，已禁用`);
       replaceRuntimeConfig(config);
     }
   }

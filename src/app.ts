@@ -13,7 +13,7 @@ import { handleChatCompletions } from "./handlers/chat.ts";
 import { handleImagesGenerations } from "./handlers/images.ts";
 import { handleImagesEdits } from "./handlers/edits.ts";
 import { handleImagesBlend } from "./handlers/blend.ts";
-import { addLogStream, getRecentLogs, info, type LogEntry, LogLevel, warn } from "./core/logger.ts";
+import { addLogStream, debug, getRecentLogs, info, type LogEntry, LogLevel, error } from "./core/logger.ts";
 import { type RequestContext, withLogging } from "./middleware/logging.ts";
 import * as Config from "./config/manager.ts";
 import {
@@ -65,7 +65,7 @@ async function saveCacheToDisk(cache: UpdateCache) {
   try {
     await Deno.writeTextFile(CACHE_FILE_PATH, JSON.stringify(cache));
   } catch (e) {
-    warn("Update", `Failed to save cache to disk: ${e}`);
+    error("Update", `Failed to save cache to disk: ${e}`);
   }
 }
 
@@ -100,11 +100,11 @@ async function handleUpdateCheck(req: Request): Promise<Response> {
 
     if (!res.ok) {
       // 403 限流或其他错误
-      warn("Update", `GitHub API failed (${res.status}), trying fallback.`);
-      
+      info("Update", `GitHub API failed (${res.status}), trying fallback.`);
+
       // 如果有缓存（即使过期），作为降级返回
       if (updateCache) {
-        warn("Update", "Serving stale cache due to API error.");
+        info("Update", "Serving stale cache due to API error.");
         return new Response(JSON.stringify({
           ...(updateCache.data as object),
           _cached: true,
@@ -133,7 +133,7 @@ async function handleUpdateCheck(req: Request): Promise<Response> {
       headers: { "Content-Type": "application/json" },
     });
   } catch (e) {
-    warn("Update", `Check update failed: ${e}`);
+    error("Update", `Check update failed: ${e}`);
     // 降级：如果有缓存，返回陈旧缓存
     if (updateCache) {
       return new Response(JSON.stringify({
@@ -236,7 +236,7 @@ function handleNotFound(): Response {
 
 /** 405 响应 */
 function handleMethodNotAllowed(method: string): Response {
-  warn("HTTP", `不支持 ${method}`);
+  info("HTTP", `不支持 ${method}`);
   return new Response("Method Not Allowed", { status: 405 });
 }
 
@@ -257,7 +257,7 @@ async function routeRequest(req: Request, ctx: RequestContext): Promise<Response
   const { pathname } = ctx.url;
   const { method } = req;
 
-  info("DEBUG", `Request: ${method} ${pathname}`);
+  debug("HTTP", `Request: ${method} ${pathname}`);
 
   // 健康检查端点（允许 GET）
   if (pathname === "/health" && method === "GET") {
@@ -284,8 +284,8 @@ async function routeRequest(req: Request, ctx: RequestContext): Promise<Response
   const spaPath = (pathname.length > 1 && pathname.endsWith("/"))
     ? pathname.slice(0, -1)
     : pathname;
-  info(
-    "DEBUG",
+  debug(
+    "Router",
     `Checking SPA route: path=${pathname}, spaPath=${spaPath}, match=${
       spaRoutes.includes(spaPath)
     }`,
@@ -300,7 +300,7 @@ async function routeRequest(req: Request, ctx: RequestContext): Promise<Response
         },
       });
     } catch (e) {
-      warn("HTTP", `无法加载设置页面: ${e}`);
+      error("HTTP", `无法加载设置页面: ${e}`);
       return handleNotFound();
     }
   }
@@ -323,7 +323,7 @@ async function routeRequest(req: Request, ctx: RequestContext): Promise<Response
         },
       });
     } catch (e) {
-      warn("HTTP", `无法加载静态资源 ${pathname}: ${e}`);
+      error("HTTP", `无法加载静态资源 ${pathname}: ${e}`);
       return handleNotFound();
     }
   }
@@ -349,7 +349,7 @@ async function routeRequest(req: Request, ctx: RequestContext): Promise<Response
         },
       });
     } catch (_e) {
-        // warn("HTTP", `无法加载存储资源 ${pathname}: ${e}`);
+        // info("HTTP", `无法加载存储资源 ${pathname}: ${e}`);
         return handleNotFound();
       }
   }
@@ -536,14 +536,14 @@ async function routeRequest(req: Request, ctx: RequestContext): Promise<Response
           const isEnabled = providerRegistry.has(name);
 
           if (name === "Gitee") {
-            console.log(
-              "[API/Config] Gitee Config Snapshot:",
-              JSON.stringify({
+            debug(
+              "App",
+              `[API/Config] Gitee Config Snapshot: ${JSON.stringify({
                 textModelsCount: p.config.textModels?.length,
                 editModelsCount: p.config.editModels?.length,
                 blendModelsCount: p.config.blendModels?.length,
                 firstTextModel: p.config.textModels?.[0],
-              }),
+              })}`
             );
           }
 

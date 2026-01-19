@@ -3,10 +3,11 @@
  *
  * 提供全功能的日志服务，包括：
  * 1. 北京时间支持 (UTC+8)
- * 2. 文件持久化存储与轮转
- * 3. 多级别日志控制 (DEBUG/INFO/WARN/ERROR)
+ * 2. 文件持久化存储与自动轮转 (按天)
+ * 3. 多级别日志控制 (DEBUG/INFO/ERROR)
  * 4. 实时 SSE 日志流推送
- * 5. 日志去重与文件监听 (Tail 模式)
+ * 5. 异步高性能写入
+ * 6. 日志去重与文件监听 (Tail 模式)
  *
  * 从根目录迁移到 src/core/ 作为核心基础设施
  */
@@ -59,6 +60,13 @@ let fileWatcher: Deno.FsWatcher | null = null;
 let currentWatchPath: string | null = null;
 /** 上一次读取的文件大小（用于增量读取） */
 let lastFileSize = 0;
+
+// ==========================================
+// 异步写入队列相关
+// ==========================================
+const logQueue: Uint8Array[] = [];
+let isWriting = false;
+let currentLogDate: string = "";
 
 /**
  * 生成日志唯一签名
@@ -199,7 +207,6 @@ async function processFileUpdates(path: string): Promise<void> {
             // 映射 LevelName 到 LogLevel 枚举
             let level = LogLevel.INFO;
             if (levelName === "DEBUG") level = LogLevel.DEBUG;
-            else if (levelName === "WARN") level = LogLevel.WARN;
             else if (levelName === "ERROR") level = LogLevel.ERROR;
 
             const entry: LogEntry = {
@@ -250,14 +257,12 @@ function getBeijingDateString(): string {
  * 日志级别枚举
  */
 export enum LogLevel {
-  /** 调试级别：最详细的日志 */
+  /** 调试级别：用于开发调试信息，记录详细的程序执行流程 */
   DEBUG = 0,
-  /** 信息级别：常规运行信息 */
+  /** 信息级别：用于记录关键业务操作和系统运行状态 */
   INFO = 1,
-  /** 警告级别：不影响运行的潜在问题 */
-  WARN = 2,
-  /** 错误级别：影响功能的错误 */
-  ERROR = 3,
+  /** 错误级别：用于记录错误和异常情况 */
+  ERROR = 2,
 }
 
 /** 日志配置接口 */
@@ -281,6 +286,72 @@ let config: LoggerConfig = {
 let logFile: Deno.FsFile | null = null;
 
 /**
+ * 轮转日志文件
+ * 检查日期是否变更，如果变更则切换文件
+ */
+async function rotateLogFileIfNeeded(): Promise<void> {
+  const today = getBeijingDateString();
+  if (currentLogDate !== today) {
+    // 关闭旧文件
+    if (logFile) {
+      try {
+        logFile.close();
+      } catch { /* ignore */ }
+      logFile = null;
+    }
+
+    // 更新日期
+    currentLogDate = today;
+
+    // 打开新文件
+    const logPath = `${config.logDir}/${today}.log`;
+    try {
+      logFile = await Deno.open(logPath, { create: true, append: true });
+      
+      // 如果是新的一天，启动新的监听
+      startFileWatcher(logPath);
+    } catch (e) {
+      console.error(`[Logger] 无法打开日志文件: ${logPath}, error: ${e}`);
+      config.fileEnabled = false;
+    }
+  }
+}
+
+/**
+ * 刷新写入队列
+ * 异步将队列中的日志写入文件
+ */
+async function flushQueue() {
+  if (isWriting || logQueue.length === 0) return;
+  isWriting = true;
+
+  try {
+    while (logQueue.length > 0) {
+      // 检查轮转
+      await rotateLogFileIfNeeded();
+
+      if (config.fileEnabled && logFile) {
+        const data = logQueue.shift();
+        if (data) {
+          await logFile.write(data);
+        }
+      } else {
+        // 如果文件未启用或无法打开，清空队列防止内存溢出
+        logQueue.length = 0; 
+      }
+    }
+  } catch (e) {
+    console.error(`[Logger] 写入失败: ${e}`);
+  } finally {
+    isWriting = false;
+    // 如果在写入过程中有新日志加入，再次触发
+    if (logQueue.length > 0) {
+      flushQueue();
+    }
+  }
+}
+
+/**
  * 核心日志写入函数
  *
  * @param {number} level - 日志级别
@@ -289,13 +360,27 @@ let logFile: Deno.FsFile | null = null;
  */
 function writeLog(level: number, module: string, message: string): void {
   const timestamp = getBeijingTimestamp();
-  const levelName = ["DEBUG", "INFO", "WARN", "ERROR"][level] || "INFO";
+  
+  // 修正 LogLevel 枚举映射：
+  // DEBUG=0 -> DEBUG
+  // INFO=1 -> INFO
+  // ERROR=2 -> ERROR
+  let actualLevelName = "INFO";
+  if (level === LogLevel.DEBUG) actualLevelName = "DEBUG";
+  else if (level === LogLevel.ERROR) actualLevelName = "ERROR";
+  else actualLevelName = "INFO";
+
+
+  // 仅当级别满足配置要求时才处理
+  if (level < config.level) {
+    return;
+  }
 
   // 创建日志条目对象
   const entry: LogEntry = {
     timestamp,
     level,
-    levelName,
+    levelName: actualLevelName,
     module,
     message,
   };
@@ -305,15 +390,16 @@ function writeLog(level: number, module: string, message: string): void {
 
   // 控制台输出（仅当级别满足配置要求时）
   if (level >= config.level) {
-    console.log(`[${timestamp}] [${levelName}] [${module}] ${message}`);
+    const color = level === LogLevel.ERROR ? "\x1b[31m" : (level === LogLevel.DEBUG ? "\x1b[34m" : "\x1b[32m");
+    const reset = "\x1b[0m";
+    console.log(`${color}[${timestamp}] [${actualLevelName}] [${module}] ${message}${reset}`);
   }
 
-  // 文件输出
-  if (config.fileEnabled && logFile) {
-    try {
-      const line = `[${timestamp}] [${levelName}] [${module}] ${message}\n`;
-      logFile.writeSync(new TextEncoder().encode(line));
-    } catch { /* 忽略写入错误 */ }
+  // 文件输出 (加入队列)
+  if (config.fileEnabled) {
+    const line = `[${timestamp}] [${actualLevelName}] [${module}] ${message}\n`;
+    logQueue.push(new TextEncoder().encode(line));
+    flushQueue();
   }
 }
 
@@ -333,15 +419,6 @@ export function debug(module: string, message: string): void {
  */
 export function info(module: string, message: string): void {
   writeLog(LogLevel.INFO, module, message);
-}
-
-/**
- * 记录警告日志
- * @param {string} module - 模块名称
- * @param {string} message - 日志内容
- */
-export function warn(module: string, message: string): void {
-  writeLog(LogLevel.WARN, module, message);
 }
 
 /**
@@ -366,7 +443,6 @@ export function configureLogger(opts: Partial<LoggerConfig>): void {
   const envLevel = Deno.env.get("LOG_LEVEL");
   if (envLevel) {
     if (envLevel.toUpperCase() === "DEBUG") config.level = LogLevel.DEBUG;
-    else if (envLevel.toUpperCase() === "WARN") config.level = LogLevel.WARN;
     else if (envLevel.toUpperCase() === "ERROR") config.level = LogLevel.ERROR;
     else config.level = LogLevel.INFO;
   }
@@ -381,13 +457,17 @@ export async function initLogger(): Promise<void> {
     await Deno.mkdir(config.logDir, { recursive: true });
   } catch { /* 目录可能已存在，忽略错误 */ }
 
-  const logPath = `${config.logDir}/${getBeijingDateString()}.log`;
+  currentLogDate = getBeijingDateString();
+  const logPath = `${config.logDir}/${currentLogDate}.log`;
 
   try {
     logFile = await Deno.open(logPath, { create: true, append: true });
     const encoder = new TextEncoder();
     const sep = "\n" + "=".repeat(50) + "\n";
-    logFile.writeSync(encoder.encode(`${sep}[${getBeijingTimestamp()}] 启动${sep}`));
+    
+    // 使用队列写入启动信息
+    logQueue.push(encoder.encode(`${sep}[${getBeijingTimestamp()}] 启动${sep}`));
+    flushQueue();
 
     // 启动文件监听
     startFileWatcher(logPath);
@@ -401,7 +481,7 @@ export async function initLogger(): Promise<void> {
  * 关闭日志模块
  * 关闭文件句柄和监听器
  */
-export function closeLogger(): void {
+export async function closeLogger(): Promise<void> {
   // 停止文件监听
   if (fileWatcher) {
     try {
@@ -410,11 +490,16 @@ export function closeLogger(): void {
     fileWatcher = null;
   }
 
+  // 等待队列清空
+  while(logQueue.length > 0) {
+    await new Promise(r => setTimeout(r, 10));
+  }
+
   if (logFile) {
     try {
       const encoder = new TextEncoder();
       const sep = "\n" + "=".repeat(50) + "\n";
-      logFile.writeSync(encoder.encode(`${sep}[${getBeijingTimestamp()}] 关闭${sep}`));
+      await logFile.write(encoder.encode(`${sep}[${getBeijingTimestamp()}] 关闭${sep}`));
       logFile.close();
     } catch { /* 忽略关闭错误 */ }
     logFile = null;
@@ -458,7 +543,7 @@ export function generateRequestId(): string {
  * @param {string} url - 请求 URL
  * @param {number} status - HTTP 状态码
  * @param {number} duration - 耗时 (ms)
- * @param {string} [error] - 错误信息（如果有）
+ * @param {string} [errorMessage] - 错误信息（如果有）
  */
 export function logRequestEnd(
   requestId: string,
@@ -466,14 +551,13 @@ export function logRequestEnd(
   url: string,
   status: number,
   duration: number,
-  error?: string,
+  errorMessage?: string,
 ): void {
-  if (error) {
-    const msg = `${method} ${url} ${status} 失败 (${duration}ms) [${requestId}]: ${error}`;
-    writeLog(LogLevel.WARN, "HTTP", msg);
+  if (errorMessage || status >= 400) {
+    const msg = `${method} ${url} ${status} 失败 (${duration}ms) [${requestId}]: ${errorMessage || "未知错误"}`;
+    writeLog(LogLevel.ERROR, "HTTP", msg);
   } else {
     // 彻底屏蔽高频/低价值请求的成功日志（如管理后台页面导航和配置轮询）
-    // 这些日志在任何级别下（包括 DEBUG）都不记录，以保持日志流纯净
     const ignoredPaths = [
       "/api/config",
       "/api/key-pool",
@@ -489,7 +573,7 @@ export function logRequestEnd(
     }
 
     const msg = `${method} ${url} ${status} (${duration}ms)`;
-    writeLog(LogLevel.DEBUG, "HTTP", msg);
+    writeLog(LogLevel.INFO, "HTTP", msg); // 正常请求使用 INFO 级别
   }
 }
 
@@ -518,7 +602,7 @@ export function logApiCallEnd(
 ): void {
   const status = success ? "成功" : "失败";
   writeLog(
-    success ? LogLevel.DEBUG : LogLevel.ERROR,
+    success ? LogLevel.INFO : LogLevel.ERROR,
     provider,
     `API ${op} ${status} (${duration}ms)`,
   );
@@ -576,7 +660,7 @@ export function logImageGenerationStart(
   promptLength: number,
 ): void {
   writeLog(
-    LogLevel.DEBUG,
+    LogLevel.INFO,
     provider,
     `🎨 开始生成图片 (${requestId}):\n  模型: ${model}\n  尺寸: ${size}\n  Prompt长度: ${promptLength} 字符`,
   );
@@ -614,7 +698,7 @@ export function logImageGenerationComplete(
   duration: number,
 ): void {
   writeLog(
-    LogLevel.DEBUG,
+    LogLevel.INFO,
     provider,
     `✅ 图片生成完成 (${requestId}): ${count} 张图片, 耗时 ${(duration / 1000).toFixed(2)}s`,
   );

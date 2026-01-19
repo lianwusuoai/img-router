@@ -54,7 +54,6 @@ export async function renderAdmin(container) {
                         <select id="logLevelSelect" class="form-control" style="width:auto; padding:4px 24px 4px 8px; height: 32px;">
                             <option value="DEBUG">DEBUG</option>
                             <option value="INFO">INFO</option>
-                            <option value="WARN">WARN</option>
                             <option value="ERROR">ERROR</option>
                         </select>
                         

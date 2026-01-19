@@ -25,7 +25,7 @@ import type {
 } from "../types/index.ts";
 import { providerRegistry } from "../providers/registry.ts";
 import { buildDataUri, normalizeAndCompressInputImages, urlToBase64 } from "../utils/image.ts";
-import { debug, error, generateRequestId, info, warn } from "../core/logger.ts";
+import { debug, error, generateRequestId, info } from "../core/logger.ts";
 import { extractPromptAndImages, normalizeMessageContent } from "./chat.ts";
 
 /**
@@ -67,7 +67,7 @@ export async function handleImagesEdits(req: Request): Promise<Response> {
   const authHeader = req.headers.get("Authorization");
   const apiKey = authHeader?.replace("Bearer ", "").trim();
   if (!apiKey) {
-    warn("HTTP", "Authorization header 缺失");
+    error("HTTP", "Authorization header 缺失");
 
     return new Response(JSON.stringify({ error: "Authorization header missing" }), {
       status: 401,
@@ -77,7 +77,7 @@ export async function handleImagesEdits(req: Request): Promise<Response> {
 
   const provider = providerRegistry.detectProvider(apiKey);
   if (!provider) {
-    warn("HTTP", "API Key 格式无法识别");
+    error("HTTP", "API Key 格式无法识别");
 
     return new Response(
       JSON.stringify({ error: "Invalid API Key format. Could not detect provider." }),
@@ -136,7 +136,7 @@ export async function handleImagesEdits(req: Request): Promise<Response> {
 
       const mask = formData.get("mask");
       if (mask) {
-        warn("HTTP", "mask 参数已提供，但当前实现不保证所有 Provider 支持遮罩编辑");
+        info("HTTP", "mask 参数已提供，但当前实现不保证所有 Provider 支持遮罩编辑");
       }
     } else {
       // 处理 JSON 请求
@@ -178,13 +178,13 @@ export async function handleImagesEdits(req: Request): Promise<Response> {
         }
 
         if (body?.mask) {
-          warn("HTTP", "mask 参数已提供，但当前实现不保证所有 Provider 支持遮罩编辑");
+          info("HTTP", "mask 参数已提供，但当前实现不保证所有 Provider 支持遮罩编辑");
         }
       }
     }
 
     if (images.length === 0) {
-      warn("HTTP", "Images Edit 请求缺少 image");
+      error("HTTP", "Images Edit 请求缺少 image");
 
       return new Response(
         JSON.stringify({ error: "必须提供 image（multipart/form-data 或 JSON 字段）" }),
@@ -217,7 +217,7 @@ export async function handleImagesEdits(req: Request): Promise<Response> {
 
     const validationError = provider.validateRequest(generationRequest);
     if (validationError) {
-      warn("HTTP", `请求参数无效: ${validationError}`);
+      error("HTTP", `请求参数无效: ${validationError}`);
 
       return new Response(JSON.stringify({ error: validationError }), {
         status: 400,
@@ -250,7 +250,7 @@ export async function handleImagesEdits(req: Request): Promise<Response> {
             data.push({ b64_json: base64 });
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
-            warn("HTTP", `URL 转 Base64 失败，回退到 URL: ${msg}`);
+            error("HTTP", `URL 转 Base64 失败，回退到 URL: ${msg}`);
             data.push({ url: img.url });
           }
         }

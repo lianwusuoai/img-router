@@ -2,6 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
 
+import { error } from "../core/logger.ts";
+
 /**
  * 服务器配置接口
  */
@@ -673,6 +675,79 @@ export const ALL_TEXT_MODELS = [
 ];
 
 /**
+ * 默认运行时配置模板（已移除敏感信息）
+ */
+const DEFAULT_RUNTIME_CONFIG: RuntimeConfig = {
+  system: {
+    requestLogging: true,
+    healthCheck: true,
+    modes: {
+      relay: true,
+      backend: false
+    },
+    port: 10001,
+    apiTimeout: 60000,
+    maxBodySize: 20971520,
+    cors: true,
+    globalAccessKey: "", // 移除敏感key
+    compressThreshold: 5,
+    compressTarget: 2
+  },
+  providers: {
+    Doubao: {
+      enabled: true,
+      text: { weight: 10 },
+      edit: { model: "doubao-seedream-4-5-251128", size: "2048x2048", quality: "standard", n: 1 },
+      blend: { model: "doubao-seedream-4-5-251128", size: "1024x1024", quality: "standard", n: 1 }
+    },
+    Gitee: {
+      enabled: true,
+      text: { weight: 10 },
+      edit: { model: "Qwen-Image-Edit", size: "1024x1024", quality: "standard", n: 1 },
+      blend: { model: "Qwen-Image-Edit", size: "2048x2048", quality: "standard", n: 1 }
+    },
+    ModelScope: {
+      enabled: true,
+      text: { model: "Tongyi-MAI/Z-Image-Turbo", size: "1024x1024", quality: "standard", n: 2 },
+      edit: { model: "Qwen/Qwen-Image-Edit", size: "1328x1328", quality: "standard", n: 1 },
+      blend: { model: "Qwen/Qwen-Image-Edit-2511", size: "1328x1328", quality: "standard", n: 1 }
+    },
+    HuggingFace: {
+      enabled: true,
+      text: { weight: 5 },
+      edit: { model: "Qwen-Image-Edit-2511", size: "1024x1024", quality: "standard", n: 1 },
+      blend: { model: "z-image-turbo", size: "1024x1024", quality: "standard", n: 1 }
+    },
+    Pollinations: {
+      enabled: true,
+      text: { model: "zimage", size: "1024x1024", quality: "standard", n: 2 },
+      edit: { model: "nanobanana-pro", size: "1024x1024", quality: "standard", n: 1 },
+      blend: { model: "kontext", size: "1024x1024", quality: "standard", n: 1 }
+    },
+    MockA: {
+      text: { model: "sdxl", weight: 100 }
+    },
+    MockB: {
+      text: { model: "mj-v6", weight: 50 }
+    }
+  },
+  keyPools: {
+    Doubao: [],
+    HuggingFace: [],
+    Gitee: []
+  },
+  promptOptimizer: {
+    baseUrl: "https://api.lianwusuoai.top/v1",
+    apiKey: "", // 移除敏感key
+    model: "翻译",
+    enableTranslate: true,
+    translatePrompt: "I am a master AI image prompt engineering advisor, specializing in crafting prompts that yield cinematic, hyper-realistic, and deeply evocative visual narratives, optimized for advanced generative models.\\nMy core purpose is to meticulously rewrite, expand, and enhance user's image prompts.\\nI transform prompts to create visually stunning images by rigorously optimizing elements such as dramatic lighting, intricate textures, compelling composition, and a distinctive artistic style.\\nMy generated prompt output will be strictly under 300 words. Prior to outputting, I will internally validate that the refined prompt strictly adheres to the word count limit and effectively incorporates the intended stylistic and technical enhancements.\\nMy output will consist exclusively of the refined image prompt text. It will commence immediately, with no leading whitespace.\\nThe text will strictly avoid markdown, quotation marks, conversational preambles, explanations, or concluding remarks. Please describe the content using prose-style sentences.\\nThe character's face is clearly visible and unobstructed.",
+    enableExpand: true,
+    expandPrompt: "You are a professional language translation engine.\\nYour sole responsibility is to translate user-provided text into English. Before processing any input, you must first identify its original language.\\nIf the input text is already in English, return the original English text directly without any modification. If the input text is not in English, translate it precisely into English.\\nYour output must strictly adhere to the following requirements: it must contain only the final English translation or the original English text, without any explanations, comments, descriptions, prefixes, suffixes, quotation marks, or other non-translated content."
+  }
+};
+
+/**
  * 配置管理器类
  * 负责加载、合并和管理应用程序的静态与动态配置
  */
@@ -849,6 +924,22 @@ class ConfigManager {
    */
   private loadRuntimeConfig(): RuntimeConfig {
     try {
+      // 确保 data 目录存在
+      const dataDir = path.dirname(this.runtimeConfigPath);
+      if (!fs.existsSync(dataDir)) {
+        console.log("创建数据目录:", dataDir);
+        fs.mkdirSync(dataDir, { recursive: true });
+      }
+
+      // 如果 runtime-config.json 不存在，则使用默认模板创建
+      if (!fs.existsSync(this.runtimeConfigPath)) {
+        console.log("创建默认 runtime-config.json");
+        // 使用深拷贝创建初始配置
+        const initialConfig = JSON.parse(JSON.stringify(DEFAULT_RUNTIME_CONFIG));
+        fs.writeFileSync(this.runtimeConfigPath, JSON.stringify(initialConfig, null, 2), "utf8");
+        return initialConfig;
+      }
+
       if (fs.existsSync(this.runtimeConfigPath)) {
         const content = fs.readFileSync(this.runtimeConfigPath, "utf8");
         const loaded = JSON.parse(content);
@@ -876,7 +967,7 @@ class ConfigManager {
         };
       }
     } catch (e) {
-      console.error("加载 runtime-config.json 失败", e);
+      error("Config", "加载 runtime-config.json 失败: " + e);
     }
     return {
       system: {},

@@ -1,6 +1,6 @@
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
-import { error, info, warn } from "./logger.ts";
+import { error, info } from "./logger.ts";
 import { S3Client } from "s3-lite-client";
 import { convertWebPToPNG } from "../utils/image.ts";
 import { configManager } from "../config/manager.ts";
@@ -107,7 +107,7 @@ export class StorageService {
           base64Clean = btoa(String.fromCharCode(...binaryData)); // 更新 base64 用于返回或其他用途
           info("Storage", "已自动将 WebP 转换为 PNG");
         } catch (e) {
-          warn("Storage", `WebP 转 PNG 失败，保留原格式: ${e}`);
+          info("Storage", `WebP 转 PNG 失败，保留原格式: ${e}`);
         }
       }
 
@@ -188,7 +188,7 @@ export class StorageService {
         // 删除 S3
         if (this.s3Client) {
           await this.s3Client.deleteObject(filename).catch((e) =>
-            warn("Storage", `S3 删除失败: ${e}`)
+            error("Storage", `S3 删除失败: ${e}`)
           );
           await this.s3Client.deleteObject(`${filename}.json`).catch(() => {});
         }

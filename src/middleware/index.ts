@@ -9,7 +9,7 @@
 export {
   completeRequestLog,
   createRequestContext,
-  logAuthWarning,
+  logAuthFailure,
   logHandlerError,
   logRouting,
   withLogging,

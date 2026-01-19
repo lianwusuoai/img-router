@@ -26,7 +26,7 @@ import type {
 } from "../types/index.ts";
 import { providerRegistry } from "../providers/registry.ts";
 import { buildDataUri, urlToBase64 } from "../utils/image.ts";
-import { debug, error, generateRequestId, info, logRequestEnd, warn } from "../core/logger.ts";
+import { debug, error, generateRequestId, info, logRequestEnd } from "../core/logger.ts";
 
 /**
  * 处理 /v1/images/blend 端点
@@ -42,7 +42,7 @@ export async function handleImagesBlend(req: Request): Promise<Response> {
 
   // 0. 检查系统是否完全关闭（双关模式）
   if (!modes.relay && !modes.backend) {
-    warn("HTTP", "系统服务未启动：中转模式和后端模式均已关闭");
+    error("HTTP", "系统服务未启动：中转模式和后端模式均已关闭");
     // logRequestEnd 由 middleware 统一记录
     return new Response(
       JSON.stringify({ error: "服务未启动：请开启中转模式或后端模式" }),
@@ -66,7 +66,7 @@ export async function handleImagesBlend(req: Request): Promise<Response> {
   if (provider) {
     // Case A: 识别到 Provider Key
     if (!modes.relay) {
-      warn("HTTP", "中转模式已禁用，拒绝外部 Provider Key");
+      error("HTTP", "中转模式已禁用，拒绝外部 Provider Key");
       // logRequestEnd 由 middleware 统一记录
       return new Response(JSON.stringify({ error: "Relay mode is disabled" }), {
         status: 403,
@@ -81,7 +81,7 @@ export async function handleImagesBlend(req: Request): Promise<Response> {
       // 验证是否允许访问后端模式
       // 如果设置了 Global Key，必须匹配
       if (systemConfig.globalAccessKey && apiKey !== systemConfig.globalAccessKey) {
-        warn("HTTP", "鉴权失败: 非有效 Provider Key 且不匹配 Global Key");
+        error("HTTP", "鉴权失败: 非有效 Provider Key 且不匹配 Global Key");
         // logRequestEnd 由 middleware 统一记录
         return new Response(JSON.stringify({ error: "Unauthorized" }), {
           status: 401,
@@ -93,7 +93,7 @@ export async function handleImagesBlend(req: Request): Promise<Response> {
       // 后续需要从 Body 解析 Model 来确定 Provider
     } else {
       // 后端模式关闭，且 Key 无效
-      warn("HTTP", "无法识别 Key 且后端模式未开启");
+      error("HTTP", "无法识别 Key 且后端模式未开启");
       // logRequestEnd 由 middleware 统一记录
       return new Response(JSON.stringify({ error: "Invalid API Key" }), {
         status: 401,
@@ -114,7 +114,7 @@ export async function handleImagesBlend(req: Request): Promise<Response> {
     // 如果是后端模式，现在需要确定 Provider 和 Key
     if (usingBackendMode) {
       if (!requestBody.model) {
-        warn("HTTP", "后端模式下请求缺失 model 参数");
+        error("HTTP", "后端模式下请求缺失 model 参数");
         logRequestEnd(requestId, req.method, url.pathname, 400, 0, "missing model");
         return new Response(
           JSON.stringify({ error: "Missing 'model' parameter in backend mode" }),
@@ -126,7 +126,7 @@ export async function handleImagesBlend(req: Request): Promise<Response> {
       }
       provider = providerRegistry.getProviderByModel(requestBody.model);
       if (!provider) {
-        warn("HTTP", `后端模式下请求了不支持的模型: ${requestBody.model}`);
+        error("HTTP", `后端模式下请求了不支持的模型: ${requestBody.model}`);
         logRequestEnd(requestId, req.method, url.pathname, 400, 0, "unsupported model");
         return new Response(JSON.stringify({ error: `Unsupported model: ${requestBody.model}` }), {
           status: 400,
@@ -163,7 +163,7 @@ export async function handleImagesBlend(req: Request): Promise<Response> {
       requestBody.messages.length === 0
     ) {
       const msg = "必须提供 messages 参数";
-      warn("HTTP", `请求参数无效: ${msg}`);
+      error("HTTP", `请求参数无效: ${msg}`);
       logRequestEnd(requestId, req.method, url.pathname, 400, Date.now() - startTime, msg);
       return new Response(JSON.stringify({ error: msg }), {
         status: 400,
@@ -185,7 +185,7 @@ export async function handleImagesBlend(req: Request): Promise<Response> {
         const poolKey = getNextAvailableKey(provider.name);
         if (!poolKey) {
           if (attempts === 1) {
-            warn("HTTP", `Provider ${provider.name} 账号池耗尽`);
+            error("HTTP", `Provider ${provider.name} 账号池耗尽`);
             logRequestEnd(requestId, req.method, url.pathname, 503, 0, "key pool exhausted");
             return new Response(
               JSON.stringify({ error: `No available API keys for provider: ${provider.name}` }),
@@ -196,7 +196,7 @@ export async function handleImagesBlend(req: Request): Promise<Response> {
             );
           } else {
             // 重试时耗尽了 Key，退出循环
-            warn("Router", `重试期间 Key 耗尽`);
+            error("Router", `重试期间 Key 耗尽`);
             break;
           }
         }
@@ -229,10 +229,10 @@ export async function handleImagesBlend(req: Request): Promise<Response> {
               errorMsg.includes("API Key") || errorMsg.includes("Unauthorized");
 
             if (isRateLimit) {
-              warn("Router", `Key ...${apiKey.slice(-4)} 触发速率限制，标记并重试...`);
+              info("Router", `Key ...${apiKey.slice(-4)} 触发速率限制，标记并重试...`);
               reportKeyError(provider.name, apiKey, "rate_limit");
             } else if (isAuthError) {
-              warn("Router", `Key ...${apiKey.slice(-4)} 鉴权失败，标记并重试...`);
+              info("Router", `Key ...${apiKey.slice(-4)} 鉴权失败，标记并重试...`);
               reportKeyError(provider.name, apiKey, "auth_error");
             } else {
               reportKeyError(provider.name, apiKey, "other");
@@ -282,7 +282,7 @@ export async function handleImagesBlend(req: Request): Promise<Response> {
             data.push({ b64_json: base64 });
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
-            warn("HTTP", `URL 转 Base64 失败，回退到 URL: ${msg}`);
+            error("HTTP", `URL 转 Base64 失败，回退到 URL: ${msg}`);
             data.push({ url: img.url });
           }
           continue;

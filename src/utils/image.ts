@@ -9,6 +9,7 @@
  */
 
 import { ImageBedConfig } from "../config/manager.ts";
+import { error } from "../core/logger.ts";
 import { fetchWithTimeout } from "./http.ts";
 import { Image } from "imagescript";
 
@@ -352,7 +353,7 @@ export async function normalizeAndCompressInputImages(images: string[]): Promise
         result.push(buildDataUri(img, "image/png"));
       }
     } catch (err) {
-      console.error(`处理图片失败: ${img.substring(0, 50)}...`, err);
+      error("Utils", `处理图片失败: ${img.substring(0, 50)}... ${err}`);
       // 忽略失败的图片，或者抛出错误？
       // 这里选择保留原始值，让后续 Provider 处理（可能会报错）
       result.push(img);

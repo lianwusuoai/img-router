@@ -14,7 +14,7 @@ import { giteeProvider } from "./gitee.ts";
 import { modelScopeProvider } from "./modelscope.ts";
 import { huggingFaceProvider } from "./huggingface.ts";
 import { pollinationsProvider } from "./pollinations.ts";
-import { debug, info, logProviderRouting, warn } from "../core/logger.ts";
+import { debug, info, logProviderRouting } from "../core/logger.ts";
 
 /** 模块名称，用于日志前缀 */
 const MODULE = "Registry";
@@ -86,7 +86,7 @@ class ProviderRegistry {
    */
   register(provider: IProvider, enabled = true): void {
     if (this.registrations.has(provider.name)) {
-      warn(MODULE, `Provider ${provider.name} 已存在，将被覆盖`);
+      info(MODULE, `Provider ${provider.name} 已存在，将被覆盖`);
     }
     this.registrations.set(provider.name, { instance: provider, enabled });
   }
@@ -115,12 +115,12 @@ class ProviderRegistry {
   get(name: ProviderName, ignoreEnabled = false): IProvider | undefined {
     const reg = this.registrations.get(name);
     if (!reg) {
-      warn(MODULE, `未找到 Provider: ${name}`);
+      info(MODULE, `未找到 Provider: ${name}`);
       return undefined;
     }
 
     if (!ignoreEnabled && !reg.enabled) {
-      warn(MODULE, `Provider ${name} 已禁用`);
+      info(MODULE, `Provider ${name} 已禁用`);
       return undefined;
     }
 

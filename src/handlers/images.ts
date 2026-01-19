@@ -20,7 +20,7 @@ import type {
 } from "../types/index.ts";
 import { providerRegistry } from "../providers/registry.ts";
 import { buildDataUri, urlToBase64 } from "../utils/image.ts";
-import { debug, error, generateRequestId, info, logRequestEnd, warn } from "../core/logger.ts";
+import { debug, error, generateRequestId, info, logRequestEnd } from "../core/logger.ts";
 import { weightedRouter, type RouteStep } from "../core/router.ts";
 import { promptOptimizerService } from "../core/prompt-optimizer.ts";
 import { keyManager } from "../core/key-manager.ts";
@@ -171,7 +171,7 @@ export async function handleImagesGenerations(req: Request): Promise<Response> {
           } else {
             const token = keyManager.getNextKey(provider.name);
             if (!token) {
-              warn("Router", `Provider ${provider.name} has no available keys, skipping...`);
+              info("Router", `Provider ${provider.name} has no available keys, skipping...`);
               lastError = new Error("No keys available");
               continue; // 尝试下一个 Provider
             }
@@ -188,12 +188,12 @@ export async function handleImagesGenerations(req: Request): Promise<Response> {
           break;
         } else {
           lastError = new Error(result.error || "Unknown error");
-          warn("Router", `Provider ${provider.name} failed: ${result.error}`);
+          error("Router", `Provider ${provider.name} failed: ${result.error}`);
           // 继续下一个 Provider
         }
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
-        warn("Router", `Provider ${provider.name} exception: ${message}`);
+        error("Router", `Provider ${provider.name} exception: ${message}`);
         lastError = e;
         // 继续下一个 Provider
       }
@@ -233,7 +233,7 @@ export async function handleImagesGenerations(req: Request): Promise<Response> {
             const { base64 } = await urlToBase64(img.url);
             base64ToSave = base64;
           } catch (e) {
-            warn("Storage", `Failed to download image for storage: ${e}`);
+            error("Storage", `Failed to download image for storage: ${e}`);
           }
         }
 
@@ -251,11 +251,10 @@ export async function handleImagesGenerations(req: Request): Promise<Response> {
             if (filename) info("Storage", `Auto-saved image: ${filename}`);
           });
         }
-      } catch (e) {
-        warn("Storage", `Failed to save image: ${e}`);
-      }
+  } catch (e) {
+          error("Storage", `Failed to save image: ${e}`);
+        }
 
-      // ... (保持原有的格式转换逻辑)
       if (desiredFormat === "b64_json") {
         if (img.b64_json) {
           data.push({ b64_json: img.b64_json });

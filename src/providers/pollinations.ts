@@ -32,7 +32,7 @@ import {
 } from "../config/manager.ts";
 import { getProviderTaskDefaults } from "../config/manager.ts";
 import { fetchWithTimeout } from "../utils/http.ts";
-import { error, info, warn } from "../core/logger.ts";
+import { error, info } from "../core/logger.ts";
 import { parseErrorMessage } from "../core/error-handler.ts";
 import {
   logFullPrompt,
@@ -475,7 +475,7 @@ export class PollinationsProvider extends BaseProvider {
     const processedImageUrls: string[] = [];
     for (const img of images) {
       if (img.startsWith("data:image/")) {
-        warn("Pollinations", "检测到 Base64 图片，正在上传到图床以避免 URL 过长...");
+        info("Pollinations", "检测到 Base64 图片，正在上传到图床以避免 URL 过长...");
         try {
           const shortUrl = await uploadBase64ToImageBed(img);
           processedImageUrls.push(shortUrl);
@@ -488,7 +488,7 @@ export class PollinationsProvider extends BaseProvider {
       } else if (img.startsWith("http")) {
         processedImageUrls.push(img);
       } else {
-        warn("Pollinations", "检测到纯 Base64 图片，正在上传到图床...");
+        info("Pollinations", "检测到纯 Base64 图片，正在上传到图床...");
         try {
           const dataUri = `data:image/png;base64,${img}`;
           const shortUrl = await uploadBase64ToImageBed(dataUri);

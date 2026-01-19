@@ -14,7 +14,6 @@ import {
   generateRequestId,
   info,
   logRequestEnd,
-  warn,
 } from "../core/logger.ts";
 import * as Config from "../config/manager.ts";
 
@@ -206,12 +205,12 @@ export function logRouting(provider: string, endpoint: string): void {
 }
 
 /**
- * 记录认证警告信息
+ * 记录认证失败信息
  *
- * @param {string} message - 警告内容
+ * @param {string} message - 错误内容
  */
-export function logAuthWarning(message: string): void {
-  warn(MODULE, message);
+export function logAuthFailure(message: string): void {
+  logError(MODULE, message);
 }
 
 /**

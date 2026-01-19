@@ -32,13 +32,13 @@ import { fetchWithTimeout, urlToBase64 } from "../utils/index.ts";
 import { parseErrorMessage } from "../core/error-handler.ts";
 import {
   info,
+  debug,
   logFullPrompt,
   logGeneratedImages,
   logImageGenerationComplete,
   logImageGenerationFailed,
   logImageGenerationStart,
   logInputImages,
-  warn,
 } from "../core/logger.ts";
 import { withApiTiming } from "../middleware/timing.ts";
 
@@ -84,9 +84,9 @@ export class GiteeProvider extends BaseProvider {
 
   constructor() {
     super();
-    console.log("[GiteeProvider] Initializing...");
-    console.log("[GiteeProvider] Raw GiteeConfig:", JSON.stringify(GiteeConfig, null, 2));
-    console.log("[GiteeProvider] Merged Config:", JSON.stringify(this.config, null, 2));
+    debug("Gitee", "Initializing...");
+    debug("Gitee", `Raw GiteeConfig: ${JSON.stringify(GiteeConfig, null, 2)}`);
+    debug("Gitee", `Merged Config: ${JSON.stringify(this.config, null, 2)}`);
   }
 
   /**
@@ -409,7 +409,7 @@ export class GiteeProvider extends BaseProvider {
         const output = statusData.output ?? statusData.data;
         const imageData = this.extractB64ImagesFromAsyncOutput(output);
         if (imageData.length === 0) {
-          warn("Gitee", "异步文生图任务成功但未返回 Base64 图像数据");
+          info("Gitee", "异步文生图任务成功但未返回 Base64 图像数据");
           throw new Error("Gitee 异步文生图返回了非 Base64 数据，请检查 API 响应格式设置");
         }
 
@@ -607,7 +607,7 @@ export class GiteeProvider extends BaseProvider {
         const output = statusData.output ?? statusData.data;
         const imageData = this.extractB64ImagesFromAsyncOutput(output);
         if (imageData.length === 0) {
-          warn("Gitee", "异步图片编辑任务成功但未返回 Base64 图像数据");
+          info("Gitee", "异步图片编辑任务成功但未返回 Base64 图像数据");
           throw new Error("Gitee 异步任务返回了非 Base64 数据，请检查 API 响应格式设置");
         }
 

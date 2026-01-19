@@ -24,6 +24,7 @@ import { DoubaoConfig } from "../config/manager.ts";
 import { fetchWithTimeout, urlToBase64 } from "../utils/index.ts";
 import { parseErrorMessage } from "../core/error-handler.ts";
 import {
+  error,
   info,
   logFullPrompt,
   logGeneratedImages,
@@ -31,7 +32,6 @@ import {
   logImageGenerationFailed,
   logImageGenerationStart,
   logInputImages,
-  warn,
 } from "../core/logger.ts";
 import { withApiTiming } from "../middleware/timing.ts";
 
@@ -189,7 +189,7 @@ export class DoubaoProvider extends BaseProvider {
       const msg = `Doubao 模型 size=${size} 不符合要求：宽高比 ${width}:${height} (${
         ratio.toFixed(4)
       }) 超出 [1/16, 16]`;
-      warn("Doubao", msg);
+      info("Doubao", msg);
       return msg;
     }
 
@@ -199,7 +199,7 @@ export class DoubaoProvider extends BaseProvider {
     if (totalPixels < constraints.min || totalPixels > constraints.max) {
       const msg =
         `Doubao ${constraints.label} 模型 size=${size} 不符合要求：总像素 ${totalPixels} 超出 [${constraints.min}, ${constraints.max}]`;
-      warn("Doubao", msg);
+      info("Doubao", msg);
       return msg;
     }
 
@@ -333,6 +333,12 @@ export class DoubaoProvider extends BaseProvider {
       if (hasImages) logInputImages("Doubao", options.requestId, processedImages);
       logImageGenerationStart("Doubao", options.requestId, model, size, finalPrompt.length);
 
+      if (finalPrompt.length > 512) {
+        const msg = `Prompt truncated from ${finalPrompt.length} to 512 chars`;
+        info("Doubao", msg);
+        finalPrompt = finalPrompt.substring(0, 512);
+      }
+
       // 额外参数处理 (Guidance Scale, Prompt Optimization 等)
       const extraOptions: Record<string, unknown> = {};
       if (request["optimize_prompt_options"]) {
@@ -375,7 +381,7 @@ export class DoubaoProvider extends BaseProvider {
       if (!response.ok) {
         const errorText = await response.text();
         // 记录原始错误日志以便排查 4.5 模型的参数问题
-        warn("Doubao", `API 原始错误响应 (RequestId: ${options.requestId}): ${errorText}`);
+        info("Doubao", `API 原始错误响应 (RequestId: ${options.requestId}): ${errorText}`);
         const friendlyError = parseErrorMessage(errorText, response.status, "Doubao");
         logImageGenerationFailed("Doubao", options.requestId, friendlyError);
         throw new Error(friendlyError);
@@ -415,7 +421,7 @@ export class DoubaoProvider extends BaseProvider {
               return { b64_json: base64, mimeType };
             } catch (e) {
               const msg = e instanceof Error ? e.message : String(e);
-              warn("Doubao", `结果转换 Base64 失败，回退到 URL: ${msg}`);
+              error("Doubao", `结果转换 Base64 失败，回退到 URL: ${msg}`);
               return { url: img.url };
             }
           }

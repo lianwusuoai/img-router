@@ -1,4 +1,4 @@
-import { debug, warn } from "../core/logger.ts";
+import { debug, error, info } from "../core/logger.ts";
 import { getPromptOptimizerConfig } from "../config/manager.ts";
 
 export class PromptOptimizerService {
@@ -139,7 +139,7 @@ export class PromptOptimizerService {
       if (options?.strict) {
         throw new Error("PromptOptimizer 未配置：缺少 Base URL 或 API Key");
       }
-      warn("PromptOptimizer", "PromptOptimizer service not configured (missing URL or Key). Skipping.");
+      info("PromptOptimizer", "PromptOptimizer service not configured (missing URL or Key). Skipping.");
       return user;
     }
 
@@ -203,19 +203,19 @@ export class PromptOptimizerService {
             .replace("localhost", "host.docker.internal")
             .replace("127.0.0.1", "host.docker.internal");
 
-          warn(
+          info(
             "PromptOptimizer",
             `Connection to localhost failed. Retrying with host.docker.internal: ${newBaseUrl}`,
           );
 
           try {
             const retryUrl = this.buildChatCompletionsUrl(newBaseUrl);
-            warn("PromptOptimizer", `Retrying connection with: ${retryUrl}`);
+            info("PromptOptimizer", `Retrying connection with: ${retryUrl}`);
             const text = await doRequest(retryUrl);
             debug("PromptOptimizer", `${context} retry success with host.docker.internal`);
             return text;
           } catch (retryError) {
-            warn("PromptOptimizer", `Retry with host.docker.internal also failed: ${retryError}`);
+            info("PromptOptimizer", `Retry with host.docker.internal also failed: ${retryError}`);
             // 明确抛出重试失败的错误，并提供诊断建议
             throw new Error(
               `连接 localhost 失败 (Connection Refused)。\n` +
@@ -234,7 +234,7 @@ export class PromptOptimizerService {
       if (options?.strict) {
         throw e;
       }
-      warn(
+      error(
         "PromptOptimizer",
         `${context} failed: ${e instanceof Error ? e.message : String(e)}. Using original text.`,
       );

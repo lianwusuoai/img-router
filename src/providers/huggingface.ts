@@ -17,7 +17,7 @@ import {
 import type { GenerationResult, ImageGenerationRequest } from "../types/index.ts";
 import { getHfModelMap, getRuntimeConfig, HuggingFaceConfig } from "../config/manager.ts";
 import { fetchWithTimeout } from "../utils/index.ts";
-import { info, warn } from "../core/logger.ts";
+import { info } from "../core/logger.ts";
 import { keyManager } from "../core/key-manager.ts";
 
 // ==========================================
@@ -114,7 +114,7 @@ function parseSSEData(sseText: string): SSEEvent[] {
         try {
           events.push({ type: "complete", data: JSON.parse(dataStr) });
         } catch (e) {
-          warn(
+          info(
             "HuggingFace",
             `SSE JSON parse error: ${e instanceof Error ? e.message : String(e)}`,
           );
@@ -325,7 +325,7 @@ export class HuggingFaceProvider extends BaseProvider {
         const isRateLimit = message.includes("429") || status === 429;
 
         if (isRateLimit) {
-          warn("HuggingFace", `Key ...${token?.slice(-4) || "Anon"} rate limited. Switching...`);
+          info("HuggingFace", `Key ...${token?.slice(-4) || "Anon"} rate limited. Switching...`);
           if (token) {
             keyManager.markKeyExhausted(this.name, token);
           }

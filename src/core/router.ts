@@ -1,7 +1,7 @@
 import { getProviderTaskDefaults } from "../config/manager.ts";
 import { providerRegistry } from "../providers/registry.ts";
 import type { IProvider } from "../providers/base.ts";
-import { debug, warn } from "./logger.ts";
+import { debug, info } from "./logger.ts";
 
 export type TaskType = "text" | "edit" | "blend";
 
@@ -124,7 +124,7 @@ export class WeightedRouter {
 
       // 如果还是空的，且模型名不包含 "/"，可能用户就是想要个通用模型，我们降级到 task 匹配
       if (candidates.length === 0) {
-        warn("Router", `未找到明确支持模型 ${preferredModel} 的 Provider，尝试按 Task 路由`);
+        info("Router", `未找到明确支持模型 ${preferredModel} 的 Provider，尝试按 Task 路由`);
         candidates = this.filterByCapability(allProviders, task);
       }
     } else {

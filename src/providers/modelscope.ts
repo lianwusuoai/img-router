@@ -34,7 +34,6 @@ import {
   logImageGenerationFailed,
   logImageGenerationStart,
   logInputImages,
-  warn,
 } from "../core/logger.ts";
 import { parseErrorMessage } from "../core/error-handler.ts";
 import { withApiTiming } from "../middleware/timing.ts";
@@ -403,7 +402,7 @@ export class ModelScopeProvider extends BaseProvider {
             results.push({ b64_json: base64 });
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
-            warn("ModelScope", `❌ 图片转换 Base64 失败，使用 URL: ${msg}`);
+            info("ModelScope", `❌ 图片转换 Base64 失败，使用 URL: ${msg}`);
             results.push({ url });
           }
         }
