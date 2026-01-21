@@ -9,7 +9,7 @@
  * - **Key 池管理**：直连模式下自动轮询 Key。
  */
 
-import { getProviderTaskDefaults, getSystemConfig } from "../config/manager.ts";
+import { getPromptOptimizerConfig, getProviderTaskDefaults, getSystemConfig } from "../config/manager.ts";
 import type { IProvider } from "../providers/base.ts";
 import type {
   GenerationResult,
@@ -128,6 +128,9 @@ export async function handleImagesGenerations(req: Request): Promise<Response> {
 
     // 原始 Prompt (用于 Intelligence 处理)
     const originalPrompt = requestBody.prompt || "";
+    
+    // 用于存储的处理后提示词（在循环外声明，以便后续保存时使用）
+    let finalProcessedPrompt = originalPrompt;
 
     // 遍历计划中的 Provider
     for (const step of providerPlan) {
@@ -138,18 +141,89 @@ export async function handleImagesGenerations(req: Request): Promise<Response> {
         info("Router", `Attempting provider: ${provider.name} with model: ${targetModel}`);
 
         // 3.1 提示词优化 (PromptOptimizer Middleware)
-        // 获取该 Provider 的提示词优化配置
+        // 获取全局提示词优化配置
+        const optimizerConfig = getPromptOptimizerConfig();
+        
+        // 获取 Provider 的任务默认配置（用于后续的 model、steps、n 等参数）
         const defaults = getProviderTaskDefaults(provider.name, "text");
-        const promptOptimizerConfig = defaults.promptOptimizer || {};
 
+        // 确定要生成的图片数量
+        const imageCount = (defaults.n !== undefined && defaults.n !== null) ? defaults.n : (requestBody.n || 1);
+        
         // 处理 Prompt
-        const processedPrompt = await promptOptimizerService.processPrompt(originalPrompt, {
-          translate: promptOptimizerConfig.translate,
-          expand: promptOptimizerConfig.expand,
-        });
+        const shouldTranslate = optimizerConfig?.enableTranslate !== false;
+        const shouldExpand = optimizerConfig?.enableExpand === true;
+        
+        let processedPrompt = originalPrompt;
+        
+        // 根据不同场景处理提示词优化
+        if (shouldTranslate && shouldExpand) {
+          // 场景1: 同时开启翻译+扩充
+          if (imageCount > 1) {
+            // 多图：先为每张图翻译，然后对每个翻译结果扩充
+            const translatedPrompts: string[] = [];
+            
+            // 步骤1: 为每张图翻译（调用 n 次）
+            for (let i = 1; i <= imageCount; i++) {
+              const translated = await promptOptimizerService.processPrompt(originalPrompt, {
+                translate: true,
+                expand: false,
+                imageIndex: i,
+              });
+              translatedPrompts.push(translated);
+            }
+            
+            // 步骤2: 对每个翻译结果扩充（再调用 n 次）
+            for (let i = 1; i <= imageCount; i++) {
+              const expanded = await promptOptimizerService.processPrompt(translatedPrompts[i - 1], {
+                translate: false,
+                expand: true,
+                imageIndex: i,
+              });
+              // 使用最后一次的结果
+              if (i === imageCount) {
+                processedPrompt = expanded;
+              }
+            }
+          } else {
+            // 单图：先翻译，再扩充（调用 2 次）
+            const translated = await promptOptimizerService.processPrompt(originalPrompt, {
+              translate: true,
+              expand: false,
+            });
+            processedPrompt = await promptOptimizerService.processPrompt(translated, {
+              translate: false,
+              expand: true,
+            });
+          }
+        } else if (shouldTranslate || shouldExpand) {
+          // 场景2: 仅翻译 或 仅扩充
+          if (imageCount > 1) {
+            // 多图：为每张图调用一次（调用 n 次）
+            for (let i = 1; i <= imageCount; i++) {
+              const optimized = await promptOptimizerService.processPrompt(originalPrompt, {
+                translate: shouldTranslate,
+                expand: shouldExpand,
+                imageIndex: i,
+              });
+              // 使用最后一次的结果
+              if (i === imageCount) {
+                processedPrompt = optimized;
+              }
+            }
+          } else {
+            // 单图：调用一次
+            processedPrompt = await promptOptimizerService.processPrompt(originalPrompt, {
+              translate: shouldTranslate,
+              expand: shouldExpand,
+            });
+          }
+        }
+        // 场景3: 都未开启 → processedPrompt 保持为 originalPrompt
 
         if (processedPrompt !== originalPrompt) {
           debug("PromptOptimizer", `Prompt optimized: ${processedPrompt.substring(0, 50)}...`);
+          finalProcessedPrompt = processedPrompt;
         }
 
         // 3.2 准备请求对象
@@ -158,8 +232,8 @@ export async function handleImagesGenerations(req: Request): Promise<Response> {
           prompt: processedPrompt,
           images: [],
           model: targetModel === "auto" ? (defaults.model || undefined) : targetModel,
-          // 从 Task Defaults 中补全 steps (如果请求中未包含)
           steps: requestBody.steps || defaults.steps || undefined,
+          n: imageCount,
         };
 
         // 3.3 获取 Key
@@ -224,7 +298,8 @@ export async function handleImagesGenerations(req: Request): Promise<Response> {
     const desiredFormat = requestBody.response_format || "url";
     const data: ImageData[] = [];
 
-    for (const img of images) {
+    for (let i = 0; i < images.length; i++) {
+      const img = images[i];
       // 保存到本地存储
       try {
         let base64ToSave = "";
@@ -242,15 +317,16 @@ export async function handleImagesGenerations(req: Request): Promise<Response> {
 
         if (base64ToSave) {
           // 异步保存，不阻塞响应
+          // 使用处理后的提示词（翻译/扩充后的版本）
           storageService.saveImage(base64ToSave, {
-            prompt: requestBody.prompt,
+            prompt: finalProcessedPrompt,  // ✅ 使用处理后的提示词
             model: requestBody.model || "unknown",
             params: {
               size: requestBody.size,
               n: requestBody.n,
               steps: requestBody.steps,
             },
-          }).then((filename: string | null) => {
+          }, "png", i).then((filename: string | null) => {
             if (filename) info("Storage", `Auto-saved image: ${filename}`);
           });
         }
@@ -283,7 +359,7 @@ export async function handleImagesGenerations(req: Request): Promise<Response> {
       data,
     };
 
-    info("HTTP", "响应完成 (Images API)");
+    debug("HTTP", "响应完成 (Images API)");
     logRequestEnd(requestId, req.method, url.pathname, 200, Date.now() - startTime);
 
     return new Response(JSON.stringify(responseBody), {

@@ -810,6 +810,9 @@ const debounceSave = debounce(async () => {
       value = input.checked;
     } else if (input.type === "number") {
       value = Number(value);
+    } else if (field === "n") {
+      // 确保 n 参数始终为数字类型
+      value = Number(value);
     }
 
     if (!payload.providers[provider]) {

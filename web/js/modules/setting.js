@@ -93,7 +93,7 @@ export async function renderSetting(container) {
 
         <div class="card">
             <div class="card-header">
-                <h3 class="card-title">图片压缩</h3>
+                <h3 class="card-title">图片压缩（支持常见图片格式：JPG, PNG, GIF, WEBP）</h3>
             </div>
             <div class="form-section" style="padding: 20px;">
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 24px;">
@@ -106,12 +106,6 @@ export async function renderSetting(container) {
                         <label class="form-label">目标大小 (MB)</label>
                         <input type="number" id="compressTarget" class="form-control" placeholder="2">
                         <div class="help-text" style="font-size: 12px; color: var(--text-secondary); margin-top: 4px;">压缩后的目标大小</div>
-                    </div>
-                </div>
-                <div class="form-group" style="margin-bottom: 0;">
-                    <label class="form-label">支持格式</label>
-                    <div style="font-size: 13px; color: var(--text-secondary); padding: 10px 0;">
-                        支持所有常见图片格式：<span style="font-weight: 500; color: var(--text-primary);">JPG, PNG, GIF, WEBP</span>
                     </div>
                 </div>
             </div>
@@ -417,6 +411,12 @@ function updateSaveStatus(status) {
  * @param {boolean} immediate - 是否立即保存
  */
 function triggerSave(immediate = false) {
+  // 如果正在保存中，跳过本次触发
+  if (saveInFlight) {
+    pendingSave = true;
+    return;
+  }
+
   updateSaveStatus("unsaved");
 
   if (saveTimer) {

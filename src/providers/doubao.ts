@@ -312,31 +312,40 @@ export class DoubaoProvider extends BaseProvider {
         : undefined;
 
       const finalCount = this.selectCount(count, hasImages);
-      let sequentialOptions: Record<string, unknown> = {};
+      
+      // 始终添加 sequential_image_generation: "auto" 参数
+      // 根据豆包官方文档，这个参数支持自动多图生成
+      const sequentialOptions: Record<string, unknown> = {
+        sequential_image_generation: "auto",
+      };
 
       if (finalCount > 1) {
-        sequentialOptions = {
-          sequential_image_generation: "auto",
-          sequential_image_generation_options: {
-            max_images: finalCount,
-          },
+        // 当需要生成多张图片时，添加 max_images 配置
+        sequentialOptions.sequential_image_generation_options = {
+          max_images: finalCount,
         };
         // 使用更明确的中文指令，确保模型理解（应用户要求调整为仅追加中文）
         finalPrompt = `${finalPrompt} 生成${finalCount}张图片。`;
         info(
-          "Doubao",
+          this.name,
           `检测到 n=${finalCount}，已启用自动多图模式，Prompt 追加指令: "生成${finalCount}张图片。"`,
         );
+      } else {
+        info(this.name, `已启用 sequential_image_generation: "auto" 参数`);
       }
 
       logFullPrompt("Doubao", options.requestId, finalPrompt);
       if (hasImages) logInputImages("Doubao", options.requestId, processedImages);
       logImageGenerationStart("Doubao", options.requestId, model, size, finalPrompt.length);
 
-      if (finalPrompt.length > 512) {
-        const msg = `Prompt truncated from ${finalPrompt.length} to 512 chars`;
+      // 移除 512 字符的硬编码限制
+      // Doubao API 实际支持更长的提示词（通常 2000+ 字符）
+      // 如果需要限制，应该使用更合理的值或从配置中读取
+      const MAX_PROMPT_LENGTH = 5000; // 提高到 5000 字符
+      if (finalPrompt.length > MAX_PROMPT_LENGTH) {
+        const msg = `Prompt truncated from ${finalPrompt.length} to ${MAX_PROMPT_LENGTH} chars`;
         info("Doubao", msg);
-        finalPrompt = finalPrompt.substring(0, 512);
+        finalPrompt = finalPrompt.substring(0, MAX_PROMPT_LENGTH);
       }
 
       // 额外参数处理 (Guidance Scale, Prompt Optimization 等)

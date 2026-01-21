@@ -121,7 +121,9 @@ function renderKeyTable(pool) {
     tr.style.borderBottom = "1px solid var(--border-color)";
 
     const lastUsed = k.lastUsed ? new Date(k.lastUsed).toLocaleString() : "未使用";
-    const keyDisplay = k.key.length > 4 ? "..." + k.key.slice(-4) : k.key;
+    const keyDisplay = k.key && typeof k.key === "string" && k.key.length > 4
+      ? "..." + k.key.slice(-4)
+      : (k.key || "********");
 
     tr.innerHTML = `
             <td style="padding:12px;">${escapeHtml(k.name)}</td>

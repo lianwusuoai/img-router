@@ -640,10 +640,6 @@ input:checked + .slider:before {
   background: rgba(137, 180, 250, 0.2);
   color: #89b4fa;
 }
-.log-level.WARN {
-  background: rgba(249, 226, 175, 0.2);
-  color: #f9e2af;
-}
 .log-level.ERROR {
   background: rgba(243, 139, 168, 0.2);
   color: #f38ba8;
@@ -706,19 +702,13 @@ input:checked + .slider:before {
   width: 100%;
 }
 
-/* Log Filters */
+/* Log Filters - 前端日志级别过滤 */
 .log-content[data-filter="INFO"] .log-entry.DEBUG {
   display: none;
 }
 
-.log-content[data-filter="WARN"] .log-entry.DEBUG,
-.log-content[data-filter="WARN"] .log-entry.INFO {
-  display: none;
-}
-
 .log-content[data-filter="ERROR"] .log-entry.DEBUG,
-.log-content[data-filter="ERROR"] .log-entry.INFO,
-.log-content[data-filter="ERROR"] .log-entry.WARN {
+.log-content[data-filter="ERROR"] .log-entry.INFO {
   display: none;
 }
 

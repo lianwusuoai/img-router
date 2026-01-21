@@ -73,7 +73,8 @@ if (systemConfig.globalAccessKey) {
   info("Startup", "🔒 已启用统一访问密钥保护");
 }
 info("Startup", `📦 版本: ${version}`);
-info("Startup", "🔧 支持: 豆包, Gitee, ModelScope, HuggingFace, Pollinations");
+const providerSummary = providerRegistry.getRegistrationSummary();
+info("Startup", `🔧 ${providerSummary}`);
 info("Startup", "📡 端点: /v1/chat/completions, /v1/images/generations, /v1/images/edits");
 info("Startup", `📁 日志目录: ./data/logs`);
 

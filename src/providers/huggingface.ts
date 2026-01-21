@@ -1,10 +1,11 @@
 /**
- * HuggingFace Provider 实现 (V4 升级版)
+ * HuggingFace Provider 实现 (V5 - 使用 Gradio Client)
  *
  * 核心升级：
- * 1. **Token 池与匿名混合模式**：优先使用 Token，耗尽后尝试匿名，支持每日重置。
- * 2. **模型适配器 (Adapters)**：针对 FLUX, SDXL, Qwen 等不同 Space 的参数格式进行动态适配。
- * 3. **精细化 SSE 解析**：精准识别 429 限流、参数错误和服务端错误。
+ * 1. **使用官方 Gradio JavaScript Client**：替代手动 HTTP 请求和 SSE 解析
+ * 2. **Token 池与匿名混合模式**：优先使用 Token，耗尽后尝试匿名，支持每日重置
+ * 3. **并发多图生成**：支持通过并发请求方式生成最多 16 张图片
+ * 4. **简化错误处理**：Gradio Client 自动处理连接和轮询
  */
 
 import {
@@ -16,117 +17,12 @@ import {
 } from "./base.ts";
 import type { GenerationResult, ImageGenerationRequest } from "../types/index.ts";
 import { getHfModelMap, getRuntimeConfig, HuggingFaceConfig } from "../config/manager.ts";
-import { fetchWithTimeout } from "../utils/index.ts";
 import { info } from "../core/logger.ts";
 import { keyManager } from "../core/key-manager.ts";
+import { Client } from "@gradio/client";
 
 // ==========================================
-// 1. 模型适配器定义
-// ==========================================
-
-interface HFModelAdapter {
-  constructPayload(prompt: string, params: AdapterParams): unknown[];
-}
-
-type AdapterParams = {
-  width: number;
-  height: number;
-  seed?: number;
-  steps?: number;
-};
-
-const FluxAdapter: HFModelAdapter = {
-  constructPayload: (prompt, { width, height, seed, steps }) => {
-    // FLUX Space 通常参数: [prompt, seed, randomize_seed, width, height, num_inference_steps]
-    // 参考: black-forest-labs/FLUX.1-schnell
-    return [
-      prompt,
-      seed || Math.floor(Math.random() * 1000000),
-      !seed, // randomize_seed
-      width,
-      height,
-      steps, // Schnell 默认 4 步
-    ];
-  },
-};
-
-const ZImageAdapter: HFModelAdapter = {
-  constructPayload: (prompt, { width, height, seed, steps }) => {
-    // Z-Image Turbo 参数: [prompt, height, width, steps, seed, randomize_seed]
-    return [
-      prompt,
-      height,
-      width,
-      steps,
-      seed || Math.floor(Math.random() * 1000000),
-      !seed,
-    ];
-  },
-};
-
-const GenericAdapter: HFModelAdapter = {
-  constructPayload: (prompt, { width, height, seed, steps }) => {
-    // 默认通用格式 (兼容旧版): [prompt, negative_prompt, seed, width, height, guidance_scale, steps]
-    // 但很多简单的 space 只是 [prompt]
-    // 这里保留原 img-router 的通用猜想: [prompt, height, width, steps, seed, false]
-    return [
-      prompt,
-      height,
-      width,
-      steps,
-      seed || Math.floor(Math.random() * 1000000),
-      !seed,
-    ];
-  },
-};
-
-function getAdapter(model: string): HFModelAdapter {
-  const m = model.toLowerCase();
-  if (m.includes("flux")) return FluxAdapter;
-  if (m.includes("z-image") || m.includes("turbo")) return ZImageAdapter;
-  return GenericAdapter;
-}
-
-// ==========================================
-// 2. SSE 解析工具
-// ==========================================
-
-interface SSEEvent {
-  type: string;
-  data?: unknown;
-}
-
-function parseSSEData(sseText: string): SSEEvent[] {
-  const events: SSEEvent[] = [];
-  const lines = sseText.split("\n");
-  let currentType = "";
-
-  for (const line of lines) {
-    if (line.startsWith("event:")) {
-      currentType = line.substring(6).trim();
-    } else if (line.startsWith("data:")) {
-      const dataStr = line.substring(5).trim();
-      if (currentType === "error") {
-        // 抛出包含特定标识的错误，以便上层捕获
-        throw new Error(`HF_SSE_ERROR: ${dataStr}`);
-      }
-      if (currentType === "complete") {
-        try {
-          events.push({ type: "complete", data: JSON.parse(dataStr) });
-        } catch (e) {
-          info(
-            "HuggingFace",
-            `SSE JSON parse error: ${e instanceof Error ? e.message : String(e)}`,
-          );
-        }
-      }
-    }
-  }
-  return events;
-}
-
-// ==========================================
-// 3. Provider 实现
+// Provider 实现
 // ==========================================
 
 export class HuggingFaceProvider extends BaseProvider {
@@ -138,9 +34,9 @@ export class HuggingFaceProvider extends BaseProvider {
     multiImageFusion: true,
     asyncTask: true,
     maxInputImages: 1,
-    maxOutputImages: 1,
-    maxEditOutputImages: 1,
-    maxBlendOutputImages: 1,
+    maxOutputImages: 16, // 支持最多 16 张图并发生成
+    maxEditOutputImages: 16, // 支持最多 16 张图编辑
+    maxBlendOutputImages: 16, // 支持最多 16 张图融合
     outputFormats: ["url", "b64_json"],
   };
 
@@ -161,13 +57,32 @@ export class HuggingFaceProvider extends BaseProvider {
 
   /**
    * 核心生成方法 (带 Token 轮询与重试)
+   * 支持并发生成多张图片 (n > 1 时)
    */
   generate(
     _apiKey: string, // 忽略传入的 apiKey，使用 KeyManager 管理
     request: ImageGenerationRequest,
     _options?: GenerationOptions,
   ): Promise<GenerationResult> {
-    const { model, prompt, size, n: _n } = request;
+    const { n = 1 } = request;
+
+    // 如果需要生成多张图，使用并发策略
+    if (n > 1) {
+      return this.generateMultiple(request, _options);
+    }
+
+    // 单张图生成逻辑
+    return this.generateSingle(request, _options);
+  }
+
+  /**
+   * 单张图生成方法 (使用 Gradio Client)
+   */
+  private generateSingle(
+    request: ImageGenerationRequest,
+    _options?: GenerationOptions,
+  ): Promise<GenerationResult> {
+    const { model, prompt, size } = request;
     // 使用配置中的默认尺寸作为兜底
     const defaultWidth = this.config.defaultSize
       ? parseInt(this.config.defaultSize.split("x")[0])
@@ -178,128 +93,196 @@ export class HuggingFaceProvider extends BaseProvider {
 
     const [width, height] = size ? size.split("x").map(Number) : [defaultWidth, defaultHeight];
 
-    // 1. 确定 API URL
-    // 优先使用 model 对应的 Space URL (这里简化为硬编码或从配置读取)
-    // 实际项目中建议建立 model -> url 的映射表
-    let apiUrl = this.config.apiUrl;
+    // 1. 确定 Space 名称和 API 端点
+    let spaceName = "luca115/z-image-turbo"; // 默认 Space
+    const apiName = "/generate_image"; // 默认 API 端点名称
 
-    // V4 升级：从动态配置读取 URL 映射
-    // 动态获取映射
+    // V5 升级：从动态配置读取 Space 映射
     const runtimeMap = getHfModelMap();
 
     if (model && runtimeMap[model]) {
-      apiUrl = runtimeMap[model].main;
-      // 备份 URL 逻辑可以在重试时使用，暂时只用 main
+      // 从 URL 提取 Space 名称 (格式: https://user-space.hf.space -> user/space)
+      const url = runtimeMap[model].main;
+      const match = url.match(/https:\/\/([^.]+)\.hf\.space/);
+      if (match) {
+        spaceName = match[1].replace(/-/g, "/");
+      }
     } else if (model?.includes("flux") && model?.includes("schnell")) {
-      apiUrl = "https://black-forest-labs-flux-1-schnell.hf.space";
+      spaceName = "black-forest-labs/flux-1-schnell";
     } else if (model?.includes("z-image")) {
-      apiUrl = "https://luca115-z-image-turbo.hf.space";
+      spaceName = "luca115/z-image-turbo";
     }
-    // ... 更多映射
 
-    // 2. 选择适配器构造 Payload
-    const adapter = getAdapter(model || "");
-    const seed = typeof request.seed === "number" ? request.seed : undefined;
-
+    // 2. 构造请求参数
+    const seed = typeof request.seed === "number" ? request.seed : Math.floor(Math.random() * 1000000);
+    
     const runtimeConfig = getRuntimeConfig();
     const hfRuntime = runtimeConfig.providers[this.name] || {};
-
-    const defaultSteps = hfRuntime.defaultSteps || this.config.defaultSteps || 4;
+    const defaultSteps = hfRuntime.defaultSteps || this.config.defaultSteps || 9;
     const steps = typeof request.steps === "number" ? request.steps : defaultSteps;
-    const payload = {
-      data: adapter.constructPayload(prompt, { width, height, seed, steps }),
-    };
 
     // 3. 执行带重试的请求
     return this.runWithTokenRetry(async (token) => {
-      const headers: Record<string, string> = { "Content-Type": "application/json" };
-      if (token) {
-        headers["Authorization"] = `Bearer ${token}`;
+      info(
+        "HuggingFace",
+        `连接到 Space: ${spaceName}, 端点: ${apiName} (Token: ${token ? "Yes" : "Anonymous"})`,
+      );
+
+      try {
+        // 使用 Gradio Client 连接到 Space
+        // token 已通过 detectApiKey 验证，确保是 hf_ 开头
+        const client = await Client.connect(spaceName, token ? {
+          hf_token: token as `hf_${string}`,
+        } : undefined);
+
+        info(
+          "HuggingFace",
+          `调用 ${apiName} - prompt: "${prompt.substring(0, 50)}...", size: ${width}x${height}`,
+        );
+
+        // 调用 predict API
+        // 参数顺序：[prompt, height, width, num_inference_steps, seed, randomize_seed]
+        const result = await client.predict(apiName, {
+          prompt: prompt,
+          height: height,
+          width: width,
+          num_inference_steps: steps,
+          seed: seed,
+          randomize_seed: false,
+        });
+
+        // 解析结果
+        if (!result || !result.data) {
+          throw new Error("No data in response");
+        }
+
+        const resultData = result.data;
+        if (!Array.isArray(resultData) || resultData.length === 0) {
+          throw new Error("No image URL found in response");
+        }
+
+        const imgItem = resultData[0];
+        let imageUrl = "";
+
+        if (imgItem && typeof imgItem === "object" && "url" in imgItem) {
+          const url = (imgItem as Record<string, unknown>).url;
+          if (typeof url === "string") imageUrl = url;
+        } else if (typeof imgItem === "string") {
+          imageUrl = imgItem;
+        }
+
+        if (!imageUrl) {
+          throw new Error("No image URL found in response");
+        }
+
+        info("HuggingFace", `图片生成成功: ${imageUrl.substring(0, 80)}...`);
+
+        return {
+          success: true,
+          images: [{ url: imageUrl }],
+          model: model || "unknown",
+          provider: this.name,
+        };
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        
+        // 检查是否是限流错误
+        if (message.includes("429") || message.includes("rate limit") || message.includes("quota")) {
+          throw new Error("429 Too Many Requests");
+        }
+        
+        // 其他错误直接抛出
+        throw new Error(`Gradio Client Error: ${message}`);
       }
+    });
+  }
+
+  /**
+   * 并发生成多张图片
+   * 采用分批并发策略，避免触发 429 限流
+   */
+  private async generateMultiple(
+    request: ImageGenerationRequest,
+    options?: GenerationOptions,
+  ): Promise<GenerationResult> {
+    const { n = 1, model } = request;
+    const MAX_CONCURRENT = 3; // 每批最多并发 3 个请求
+
+    info(
+      "HuggingFace",
+      `开始并发生成 ${n} 张图片 (模型: ${model}, 批次大小: ${MAX_CONCURRENT})`,
+    );
+
+    const results: GenerationResult[] = [];
+    const errors: string[] = [];
+
+    // 分批处理
+    for (let i = 0; i < n; i += MAX_CONCURRENT) {
+      const batchSize = Math.min(MAX_CONCURRENT, n - i);
+      const batchNumber = Math.floor(i / MAX_CONCURRENT) + 1;
+      const totalBatches = Math.ceil(n / MAX_CONCURRENT);
 
       info(
         "HuggingFace",
-        `Calling ${apiUrl} with model ${model} (Token: ${token ? "Yes" : "Anonymous"})`,
+        `处理第 ${batchNumber}/${totalBatches} 批，包含 ${batchSize} 个请求`,
       );
 
-      // Step A: Initiate Prediction
-      const predictUrl = `${apiUrl}/gradio_api/call/predict`; // 部分 Space 是 call/infer
-      const response = await fetchWithTimeout(predictUrl, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(payload),
+      // 创建当前批次的请求
+      const batchPromises = Array.from({ length: batchSize }, (_, index) => {
+        const imageIndex = i + index + 1;
+        return this.generateSingle({ ...request, n: 1 }, options)
+          .then((result) => {
+            info("HuggingFace", `图片 ${imageIndex}/${n} 生成成功`);
+            return result;
+          })
+          .catch((error) => {
+            const errorMsg = error instanceof Error ? error.message : String(error);
+            info("HuggingFace", `图片 ${imageIndex}/${n} 生成失败: ${errorMsg}`);
+            errors.push(`图片 ${imageIndex}: ${errorMsg}`);
+            return null;
+          });
       });
 
-      if (response.status === 429) {
-        throw new Error("429 Too Many Requests");
-      }
-      if (!response.ok) {
-        throw new Error(`HF API Error: ${response.status} ${await response.text()}`);
-      }
+      // 等待当前批次完成
+      const batchResults = await Promise.all(batchPromises);
 
-      const { event_id } = await response.json();
-
-      // Step B: Poll Result
-      const resultUrl = `${apiUrl}/gradio_api/call/predict/${event_id}`;
-      const resultResponse = await fetchWithTimeout(resultUrl, {
-        method: "GET",
-        headers, // 保持相同的 Auth
-      });
-
-      if (resultResponse.status === 429) {
-        throw new Error("429 Too Many Requests (Polling)");
-      }
-
-      const sseText = await resultResponse.text();
-
-      // Step C: Parse SSE
-      try {
-        const events = parseSSEData(sseText);
-        const completeEvent = events.find((e) => e.type === "complete");
-
-        if (completeEvent && completeEvent.data) {
-          // 解析结果
-          // 通常结果在 data[0].url
-          const resultData = completeEvent.data;
-          if (!Array.isArray(resultData) || resultData.length === 0) {
-            throw new Error("No image URL found in response");
-          }
-
-          const imgItem = resultData[0];
-
-          let imageUrl = "";
-          if (imgItem && typeof imgItem === "object" && "url" in imgItem) {
-            const url = (imgItem as Record<string, unknown>).url;
-            if (typeof url === "string") imageUrl = url;
-          } else if (typeof imgItem === "string") {
-            imageUrl = imgItem; // 有些直接返回 URL 字符串
-          }
-
-          if (!imageUrl) {
-            throw new Error("No image URL found in response");
-          }
-
-          return {
-            success: true,
-            images: [{ url: imageUrl }],
-            model: model || "unknown",
-            provider: this.name,
-          };
+      // 收集成功的结果
+      for (const result of batchResults) {
+        if (result && result.success) {
+          results.push(result);
         }
-        throw new Error("No complete event received");
-      } catch (e) {
-        if (e instanceof Error && e.message.includes("HF_SSE_ERROR")) {
-          // 服务端返回的明确错误
-          // 如果包含 quota/rate limit 相关的词，抛出 429
-          if (e.message.includes("quota") || e.message.includes("rate limit")) {
-            throw new Error("429 Quota Exhausted (SSE)");
-          }
-          // 否则视为不可重试的参数错误
-          throw new Error(`Generation Failed: ${e.message}`);
-        }
-        throw e;
       }
-    });
+
+      // 在批次之间添加短暂延迟，避免触发限流
+      if (i + MAX_CONCURRENT < n) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+    }
+
+    // 汇总结果
+    if (results.length === 0) {
+      throw new Error(
+        `所有图片生成失败。错误信息:\n${errors.join("\n")}`,
+      );
+    }
+
+    const successCount = results.length;
+    const failCount = n - successCount;
+
+    info(
+      "HuggingFace",
+      `并发生成完成: 成功 ${successCount}/${n} 张${failCount > 0 ? `, 失败 ${failCount} 张` : ""}`,
+    );
+
+    // 过滤掉 undefined 的结果
+    const images = results.flatMap((r) => r.images).filter((img): img is NonNullable<typeof img> => img !== undefined);
+
+    return {
+      success: true,
+      images,
+      model: model || "unknown",
+      provider: this.name,
+    };
   }
 
   /**
@@ -321,8 +304,7 @@ export class HuggingFaceProvider extends BaseProvider {
       } catch (e) {
         lastError = e;
         const message = e instanceof Error ? e.message : String(e);
-        const status = getErrorStatus(e);
-        const isRateLimit = message.includes("429") || status === 429;
+        const isRateLimit = message.includes("429") || message.includes("rate limit") || message.includes("quota");
 
         if (isRateLimit) {
           info("HuggingFace", `Key ...${token?.slice(-4) || "Anon"} rate limited. Switching...`);
@@ -340,13 +322,6 @@ export class HuggingFaceProvider extends BaseProvider {
 
     throw lastError instanceof Error ? lastError : new Error(String(lastError));
   }
-}
-
-function getErrorStatus(err: unknown): number | undefined {
-  if (!err || typeof err !== "object") return undefined;
-  if (!("status" in err)) return undefined;
-  const status = (err as Record<string, unknown>).status;
-  return typeof status === "number" ? status : undefined;
 }
 
 export const huggingFaceProvider = new HuggingFaceProvider();

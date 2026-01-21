@@ -339,6 +339,16 @@ async function loadPromptOptimizerConfig() {
                 </div>
 
                 <div class="form-group">
+                    <label class="form-label">翻译字数上限 (Max Length)</label>
+                    <input type="number" class="form-control" data-field="translateMaxLength" value="${
+      config.translateMaxLength || 5000
+    }" placeholder="5000" min="100" max="50000" style="width: 200px;">
+                    <div class="help-text" style="font-size: 12px; color: var(--text-secondary); margin-top: 4px;">
+                        翻译功能的最大字符数限制，超过此长度的提示词将被截断（默认：5000字）
+                    </div>
+                </div>
+
+                <div class="form-group">
                     <label class="form-label">翻译提示词模板 (Translation System Prompt)</label>
                     <textarea class="form-control" data-field="translatePrompt" rows="3" placeholder="默认: You are a professional prompt engineer and translator...">${
       config.translatePrompt || ""
@@ -356,6 +366,16 @@ async function loadPromptOptimizerConfig() {
     }>
                         <span class="slider"></span>
                     </label>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">扩充字数上限 (Max Length)</label>
+                    <input type="number" class="form-control" data-field="expandMaxLength" value="${
+      config.expandMaxLength || 5000
+    }" placeholder="5000" min="100" max="50000" style="width: 200px;">
+                    <div class="help-text" style="font-size: 12px; color: var(--text-secondary); margin-top: 4px;">
+                        扩充功能的最大字符数限制，超过此长度的提示词将被截断（默认：5000字）
+                    </div>
                 </div>
 
                 <div class="form-group">

@@ -8,10 +8,13 @@
  * - **双模式支持**：支持中转模式 (Relay) 和后端模式 (Backend)。
  * - **后端模式增强**：在后端模式下，支持自动从密钥池分配 Key，并具备错误重试机制。
  * - **格式兼容**：返回 OpenAI Images API 兼容的响应格式。
+ * - **提示词优化**：支持翻译和扩充提示词
+ * - **图片存储**：自动保存生成的图片到本地和 S3
  */
 
 import {
   getNextAvailableKey,
+  getPromptOptimizerConfig,
   getProviderTaskDefaults,
   getSystemConfig,
   reportKeyError,
@@ -27,6 +30,9 @@ import type {
 import { providerRegistry } from "../providers/registry.ts";
 import { buildDataUri, urlToBase64 } from "../utils/image.ts";
 import { debug, error, generateRequestId, info, logRequestEnd } from "../core/logger.ts";
+import { extractPromptAndImages } from "./chat.ts";
+import { promptOptimizerService } from "../core/prompt-optimizer.ts";
+import { storageService } from "../core/storage.ts";
 
 /**
  * 处理 /v1/images/blend 端点
@@ -146,6 +152,10 @@ export async function handleImagesBlend(req: Request): Promise<Response> {
     if (requestBody.steps === undefined && defaults.steps) {
       requestBody.steps = defaults.steps;
     }
+    // 优先使用配置文件中的 n 值，覆盖客户端传入的值
+    if (defaults.n !== undefined && defaults.n !== null) {
+      requestBody.n = defaults.n;
+    }
 
     const desiredFormat = requestBody.response_format || "url";
 
@@ -169,6 +179,109 @@ export async function handleImagesBlend(req: Request): Promise<Response> {
         status: 400,
         headers: { "Content-Type": "application/json" },
       });
+    }
+
+    // 提取提示词用于优化和存储
+    const extracted = extractPromptAndImages(requestBody.messages);
+    const originalPrompt = extracted.prompt;
+    let processedPrompt = originalPrompt;
+
+    // 提示词优化
+    try {
+      const optimizerConfig = getPromptOptimizerConfig();
+      const defaults = getProviderTaskDefaults(provider.name, "blend");
+      const imageCount = (defaults.n !== undefined && defaults.n !== null) ? defaults.n : (requestBody.n || 1);
+      
+      const shouldTranslate = optimizerConfig?.enableTranslate !== false;
+      const shouldExpand = optimizerConfig?.enableExpand === true;
+      
+      // 根据不同场景处理提示词优化（与 images.ts 逻辑一致）
+      if (shouldTranslate && shouldExpand) {
+        // 场景1: 同时开启翻译+扩充
+        if (imageCount > 1) {
+          // 多图：先为每张图翻译，然后对每个翻译结果扩充
+          const translatedPrompts: string[] = [];
+          
+          // 步骤1: 为每张图翻译（调用 n 次）
+          for (let i = 1; i <= imageCount; i++) {
+            const translated = await promptOptimizerService.processPrompt(originalPrompt, {
+              translate: true,
+              expand: false,
+              imageIndex: i,
+            });
+            translatedPrompts.push(translated);
+          }
+          
+          // 步骤2: 对每个翻译结果扩充（再调用 n 次）
+          for (let i = 1; i <= imageCount; i++) {
+            const expanded = await promptOptimizerService.processPrompt(translatedPrompts[i - 1], {
+              translate: false,
+              expand: true,
+              imageIndex: i,
+            });
+            // 使用最后一次的结果
+            if (i === imageCount) {
+              processedPrompt = expanded;
+            }
+          }
+        } else {
+          // 单图：先翻译，再扩充（调用 2 次）
+          const translated = await promptOptimizerService.processPrompt(originalPrompt, {
+            translate: true,
+            expand: false,
+          });
+          processedPrompt = await promptOptimizerService.processPrompt(translated, {
+            translate: false,
+            expand: true,
+          });
+        }
+      } else if (shouldTranslate || shouldExpand) {
+        // 场景2: 仅翻译 或 仅扩充
+        if (imageCount > 1) {
+          // 多图：为每张图调用一次（调用 n 次）
+          for (let i = 1; i <= imageCount; i++) {
+            const optimized = await promptOptimizerService.processPrompt(originalPrompt, {
+              translate: shouldTranslate,
+              expand: shouldExpand,
+              imageIndex: i,
+            });
+            // 使用最后一次的结果
+            if (i === imageCount) {
+              processedPrompt = optimized;
+            }
+          }
+        } else {
+          // 单图：调用一次
+          processedPrompt = await promptOptimizerService.processPrompt(originalPrompt, {
+            translate: shouldTranslate,
+            expand: shouldExpand,
+          });
+        }
+      }
+      // 场景3: 都未开启 → processedPrompt 保持为 originalPrompt
+      
+      // 如果提示词被优化了，更新 messages 中的文本内容
+      if (processedPrompt !== originalPrompt && requestBody.messages.length > 0) {
+        // 找到第一个包含文本的 message 并更新
+        for (const msg of requestBody.messages) {
+          if (typeof msg.content === "string" && msg.content.trim()) {
+            msg.content = processedPrompt;
+            break;
+          } else if (Array.isArray(msg.content)) {
+            for (const part of msg.content) {
+              if (part.type === "text" && part.text) {
+                part.text = processedPrompt;
+                break;
+              }
+            }
+            break;
+          }
+        }
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      info("PromptOptimizer", `提示词优化失败，使用原始提示词: ${msg}`);
+      processedPrompt = originalPrompt;
     }
 
     // 重试循环 (仅限后端模式)
@@ -269,6 +382,29 @@ export async function handleImagesBlend(req: Request): Promise<Response> {
 
     const images: ImageData[] = generationResult.images || [];
 
+    // 存储生成的图片
+    for (let i = 0; i < images.length; i++) {
+      const img = images[i];
+      if (img.b64_json) {
+        try {
+          await storageService.saveImage(img.b64_json, {
+            prompt: processedPrompt,
+            model: requestBody.model || "blend",
+            seed: 0,
+            params: {
+              task: "blend",
+              originalPrompt: originalPrompt !== processedPrompt ? originalPrompt : undefined,
+              provider: provider.name,
+              requestId,
+            },
+          }, "png", i);
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          error("Storage", `保存图片失败: ${msg}`);
+        }
+      }
+    }
+
     const data: ImageData[] = [];
     for (const img of images) {
       if (desiredFormat === "b64_json") {
@@ -307,7 +443,7 @@ export async function handleImagesBlend(req: Request): Promise<Response> {
       data,
     };
 
-    info("HTTP", "响应完成 (Images Blend API)");
+    debug("HTTP", "响应完成 (Images Blend API)");
     logRequestEnd(requestId, req.method, url.pathname, 200, Date.now() - startTime);
 
     return new Response(JSON.stringify(responseBody), {

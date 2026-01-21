@@ -350,10 +350,14 @@ export interface PromptOptimizerConfig {
   enableTranslate?: boolean;
   /** 翻译提示词模板 */
   translatePrompt?: string;
+  /** 翻译字数上限 */
+  translateMaxLength?: number;
   /** 是否启用扩充 */
   enableExpand?: boolean;
   /** 扩充提示词模板 */
   expandPrompt?: string;
+  /** 扩充字数上限 */
+  expandMaxLength?: number;
 }
 
 /**
@@ -743,9 +747,11 @@ const DEFAULT_RUNTIME_CONFIG: RuntimeConfig = {
     enableTranslate: true,
     translatePrompt:
       "I am a master AI image prompt engineering advisor, specializing in crafting prompts that yield cinematic, hyper-realistic, and deeply evocative visual narratives, optimized for advanced generative models.\\nMy core purpose is to meticulously rewrite, expand, and enhance user's image prompts.\\nI transform prompts to create visually stunning images by rigorously optimizing elements such as dramatic lighting, intricate textures, compelling composition, and a distinctive artistic style.\\nMy generated prompt output will be strictly under 300 words. Prior to outputting, I will internally validate that the refined prompt strictly adheres to the word count limit and effectively incorporates the intended stylistic and technical enhancements.\\nMy output will consist exclusively of the refined image prompt text. It will commence immediately, with no leading whitespace.\\nThe text will strictly avoid markdown, quotation marks, conversational preambles, explanations, or concluding remarks. Please describe the content using prose-style sentences.\\nThe character's face is clearly visible and unobstructed.",
+    translateMaxLength: 5000,
     enableExpand: true,
     expandPrompt:
       "You are a professional language translation engine.\\nYour sole responsibility is to translate user-provided text into English. Before processing any input, you must first identify its original language.\\nIf the input text is already in English, return the original English text directly without any modification. If the input text is not in English, translate it precisely into English.\\nYour output must strictly adhere to the following requirements: it must contain only the final English translation or the original English text, without any explanations, comments, descriptions, prefixes, suffixes, quotation marks, or other non-translated content.",
+    expandMaxLength: 5000,
   },
 };
 
@@ -896,8 +902,10 @@ class ConfigManager {
         model: typeof po.model === "string" ? po.model : "",
         enableTranslate: typeof po.enableTranslate === "boolean" ? po.enableTranslate : undefined,
         translatePrompt: typeof po.translatePrompt === "string" ? po.translatePrompt : undefined,
+        translateMaxLength: typeof po.translateMaxLength === "number" ? po.translateMaxLength : undefined,
         enableExpand: typeof po.enableExpand === "boolean" ? po.enableExpand : undefined,
         expandPrompt: typeof po.expandPrompt === "string" ? po.expandPrompt : undefined,
+        expandMaxLength: typeof po.expandMaxLength === "number" ? po.expandMaxLength : undefined,
       };
     } else if ("promptOptimizer" in (config as unknown as Record<string, unknown>)) {
       changed = true;
@@ -960,19 +968,12 @@ class ConfigManager {
         fs.mkdirSync(dataDir, { recursive: true });
       }
 
-      // 如果 runtime-config.json 不存在，则使用默认模板创建
-      if (!fs.existsSync(this.runtimeConfigPath)) {
-        console.log("创建默认 runtime-config.json");
-        // 使用深拷贝创建初始配置
-        const initialConfig = JSON.parse(JSON.stringify(DEFAULT_RUNTIME_CONFIG));
-        fs.writeFileSync(this.runtimeConfigPath, JSON.stringify(initialConfig, null, 2), "utf8");
-        return initialConfig;
-      }
-
+      // 优先尝试加载现有的 runtime-config.json
       if (fs.existsSync(this.runtimeConfigPath)) {
+        console.log("加载现有 runtime-config.json");
         const content = fs.readFileSync(this.runtimeConfigPath, "utf8");
         const loaded = JSON.parse(content);
-        // 基本的迁移/验证逻辑（如果需要）
+        // 返回现有配置，保留所有用户设置
         return {
           system: loaded.system || {},
           providers: loaded.providers || {},
@@ -983,10 +984,12 @@ class ConfigManager {
         };
       }
 
+      // 尝试加载旧位置的配置文件（兼容性处理）
       if (fs.existsSync(this.legacyRuntimeConfigPath)) {
+        console.log("迁移旧配置文件到新位置");
         const content = fs.readFileSync(this.legacyRuntimeConfigPath, "utf8");
         const loaded = JSON.parse(content);
-        return {
+        const config = {
           system: loaded.system || {},
           providers: loaded.providers || {},
           keyPools: loaded.keyPools || {},
@@ -994,10 +997,20 @@ class ConfigManager {
           hfModelMap: loaded.hfModelMap,
           storage: loaded.storage,
         };
+        // 将旧配置保存到新位置
+        fs.writeFileSync(this.runtimeConfigPath, JSON.stringify(config, null, 2), "utf8");
+        return config;
       }
+
+      // 只有在配置文件真正不存在时才创建默认配置
+      console.log("首次运行：创建默认 runtime-config.json");
+      const initialConfig = JSON.parse(JSON.stringify(DEFAULT_RUNTIME_CONFIG));
+      fs.writeFileSync(this.runtimeConfigPath, JSON.stringify(initialConfig, null, 2), "utf8");
+      return initialConfig;
     } catch (e) {
       error("Config", "加载 runtime-config.json 失败: " + e);
     }
+    // 出错时返回空配置，避免覆盖用户数据
     return {
       system: {},
       providers: {},
@@ -1276,7 +1289,25 @@ class ConfigManager {
    * @returns {KeyPoolItem[]} 密钥列表
    */
   public getKeyPool(provider: string): KeyPoolItem[] {
-    return this.runtimeConfig.keyPools?.[provider] || [];
+    const pool = this.runtimeConfig.keyPools?.[provider] || [];
+    // 确保所有 Key 都有有效的 id 字段
+    let needsSave = false;
+    const validatedPool = pool.map((k) => {
+      if (!k.id || typeof k.id !== "string" || k.id.trim() === "") {
+        needsSave = true;
+        return {
+          ...k,
+          id: crypto.randomUUID(),
+        };
+      }
+      return k;
+    });
+    
+    if (needsSave) {
+      this.updateKeyPool(provider, validatedPool);
+    }
+    
+    return validatedPool;
   }
 
   /**

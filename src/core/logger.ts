@@ -1,15 +1,17 @@
 /**
- * @fileoverview 核心日志模块
+ * @fileoverview 核心日志模块（简化版）
  *
- * 提供全功能的日志服务，包括：
+ * 提供轻量级日志服务：
  * 1. 北京时间支持 (UTC+8)
  * 2. 文件持久化存储与自动轮转 (按天)
  * 3. 多级别日志控制 (DEBUG/INFO/ERROR)
  * 4. 实时 SSE 日志流推送
- * 5. 异步高性能写入
- * 6. 日志去重与文件监听 (Tail 模式)
+ * 5. 同步写入，真正实时
+ * 6. 日志去重机制
  *
- * 从根目录迁移到 src/core/ 作为核心基础设施
+ * 统一输出格式：
+ * - INFO：单行显示
+ * - ERROR/DEBUG：多行格式化显示
  */
 
 /** 北京时间偏移量 (UTC+8) */
@@ -54,18 +56,9 @@ const recentLogs: LogEntry[] = [];
 /** 最大保留的历史日志条数 */
 const MAX_RECENT_LOGS = 100;
 
-/** 文件系统监听器实例 */
-let fileWatcher: Deno.FsWatcher | null = null;
-/** 当前正在监听的文件路径 */
-let currentWatchPath: string | null = null;
-/** 上一次读取的文件大小（用于增量读取） */
-let lastFileSize = 0;
-
-// ==========================================
-// 异步写入队列相关
-// ==========================================
-const logQueue: Uint8Array[] = [];
-let isWriting = false;
+/** 日志文件句柄 */
+let logFile: Deno.FsFile | null = null;
+/** 当前日志日期 */
 let currentLogDate: string = "";
 
 /**
@@ -83,27 +76,25 @@ function getLogSignature(entry: LogEntry): string {
  * 包括去重、缓存更新和实时推送
  *
  * @param {LogEntry} entry - 日志条目
- * @param {boolean} isExternal - 是否来自外部文件监听（用于防止循环记录）
  */
-function processLogEntry(entry: LogEntry, isExternal: boolean): void {
+function processLogEntry(entry: LogEntry): void {
   // 1. 签名去重
   const sig = getLogSignature(entry);
-  if (isExternal && recentLogSignatures.has(sig)) {
-    // 如果是外部文件读取的日志，且已经存在于签名缓存中（说明是我们自己写入的），则忽略
+  if (recentLogSignatures.has(sig)) {
     return;
   }
 
   // 2. 更新签名缓存
   recentLogSignatures.add(sig);
   if (recentLogSignatures.size > MAX_SIGNATURES) {
-    recentLogSignatures.clear(); // 简单清理，防止内存无限增长
+    recentLogSignatures.clear();
     recentLogSignatures.add(sig);
   }
 
   // 3. 更新历史记录
   recentLogs.push(entry);
   if (recentLogs.length > MAX_RECENT_LOGS) {
-    recentLogs.shift(); // 移除最旧的日志
+    recentLogs.shift();
   }
 
   // 4. 推送给所有活跃的 SSE 连接
@@ -124,123 +115,13 @@ export function getRecentLogs(): LogEntry[] {
 }
 
 /**
- * 启动日志文件监听（模拟 `tail -f` 功能）
- * 当日志文件发生变化时，自动读取新增内容并推送到流
- *
- * @param {string} path - 日志文件绝对路径
- */
-async function startFileWatcher(path: string): Promise<void> {
-  if (currentWatchPath === path && fileWatcher) return;
-
-  // 停止旧的监听器
-  if (fileWatcher) {
-    try {
-      fileWatcher.close();
-    } catch { /* 忽略关闭错误 */ }
-    fileWatcher = null;
-  }
-
-  currentWatchPath = path;
-
-  try {
-    // 获取初始文件大小
-    const stat = await Deno.stat(path);
-    lastFileSize = stat.size;
-
-    // 开始监听文件变化
-    // 注意：Windows 上 Deno.watchFs 对文件修改通常是有效的
-    fileWatcher = Deno.watchFs(path);
-
-    // 异步处理文件变更事件
-    (async () => {
-      if (!fileWatcher) return;
-      for await (const event of fileWatcher) {
-        if (event.kind === "modify") {
-          await processFileUpdates(path);
-        }
-      }
-    })();
-
-    info("Logger", `已启动日志文件监听: ${path}`);
-  } catch (e) {
-    // 文件可能还不存在，或者无法访问
-    // 这是一个非致命错误，因为如果是我们自己创建文件，稍后 initLogger 会创建
-    // 但如果是监听外部文件，可能需要重试机制。这里暂时只记录。
-    // 注意：这里调用 info 可能会导致递归调用（如果 info -> writeLog -> 报错），所以用 console.error
-    console.error(`[Logger] 启动文件监听失败: ${e}`);
-  }
-}
-
-/**
- * 处理文件更新事件
- * 读取自上次检查以来的新增内容
- *
- * @param {string} path - 文件路径
- */
-async function processFileUpdates(path: string): Promise<void> {
-  try {
-    const stat = await Deno.stat(path);
-    const newSize = stat.size;
-
-    if (newSize > lastFileSize) {
-      // 读取新增内容
-      const file = await Deno.open(path, { read: true });
-      try {
-        await file.seek(lastFileSize, Deno.SeekMode.Start);
-        const buf = new Uint8Array(newSize - lastFileSize);
-        await file.read(buf);
-        const text = new TextDecoder().decode(buf);
-
-        // 更新偏移量
-        lastFileSize = newSize;
-
-        // 解析并推送日志行
-        const lines = text.split("\n");
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          // 解析标准日志行格式: [TIMESTAMP] [LEVEL] [MODULE] MESSAGE
-          // 正则: ^\[(.*?)\] \[(.*?)\] \[(.*?)\] (.*)$
-          const match = line.match(/^\[(.*?)\] \[(.*?)\] \[(.*?)\] (.*)$/);
-          if (match) {
-            const [_, timestamp, levelName, module, message] = match;
-
-            // 映射 LevelName 到 LogLevel 枚举
-            let level = LogLevel.INFO;
-            if (levelName === "DEBUG") level = LogLevel.DEBUG;
-            else if (levelName === "ERROR") level = LogLevel.ERROR;
-
-            const entry: LogEntry = {
-              timestamp,
-              level,
-              levelName,
-              module,
-              message,
-            };
-
-            // 处理外部日志（标记 isExternal = true）
-            processLogEntry(entry, true);
-          }
-        }
-      } finally {
-        file.close();
-      }
-    } else if (newSize < lastFileSize) {
-      // 文件被截断（如日志轮转），重置偏移量
-      lastFileSize = newSize;
-    }
-  } catch (e) {
-    console.error(`[Logger] 读取文件更新失败: ${e}`);
-  }
-}
-
-/**
  * 获取北京时间格式化字符串
- * 格式: YYYY-MM-DD  HH:mm:ss.sss
+ * 格式: YYYY-MM-DD HH:mm:ss.sss
  */
 function getBeijingTimestamp(): string {
   const now = new Date();
   const beijingTime = new Date(now.getTime() + BEIJING_TIMEZONE_OFFSET);
-  return beijingTime.toISOString().replace("T", "  ").replace("Z", "");
+  return beijingTime.toISOString().replace("T", " ").replace("Z", "");
 }
 
 /**
@@ -277,13 +158,10 @@ interface LoggerConfig {
 
 /** 默认日志配置 */
 let config: LoggerConfig = {
-  level: LogLevel.INFO,
+  level: LogLevel.DEBUG,  // 默认记录所有级别的日志
   fileEnabled: true,
   logDir: "./data/logs",
 };
-
-/** 日志文件句柄 */
-let logFile: Deno.FsFile | null = null;
 
 /**
  * 轮转日志文件
@@ -307,9 +185,6 @@ async function rotateLogFileIfNeeded(): Promise<void> {
     const logPath = `${config.logDir}/${today}.log`;
     try {
       logFile = await Deno.open(logPath, { create: true, append: true });
-
-      // 如果是新的一天，启动新的监听
-      startFileWatcher(logPath);
     } catch (e) {
       console.error(`[Logger] 无法打开日志文件: ${logPath}, error: ${e}`);
       config.fileEnabled = false;
@@ -318,53 +193,54 @@ async function rotateLogFileIfNeeded(): Promise<void> {
 }
 
 /**
- * 刷新写入队列
- * 异步将队列中的日志写入文件
+ * 格式化日志消息
+ * INFO：单行显示
+ * ERROR/DEBUG：多行格式化显示
+ *
+ * @param {LogLevel} level - 日志级别
+ * @param {string} timestamp - 时间戳
+ * @param {string} levelName - 级别名称
+ * @param {string} module - 模块名
+ * @param {string} message - 消息内容
+ * @returns {string} 格式化后的日志字符串
  */
-async function flushQueue() {
-  if (isWriting || logQueue.length === 0) return;
-  isWriting = true;
-
-  try {
-    while (logQueue.length > 0) {
-      // 检查轮转
-      await rotateLogFileIfNeeded();
-
-      if (config.fileEnabled && logFile) {
-        const data = logQueue.shift();
-        if (data) {
-          await logFile.write(data);
-        }
-      } else {
-        // 如果文件未启用或无法打开，清空队列防止内存溢出
-        logQueue.length = 0;
+function formatLogMessage(
+  level: LogLevel,
+  timestamp: string,
+  levelName: string,
+  module: string,
+  message: string
+): string {
+  const lines = message.split('\n');
+  
+  if (level === LogLevel.INFO) {
+    // INFO：单行显示（将换行符替换为空格）
+    const singleLine = message.replace(/\n+/g, ' ').trim();
+    return `[${timestamp}] [${levelName}] [${module}] ${singleLine}`;
+  } else {
+    // ERROR/DEBUG：多行格式化显示
+    const result = [`[${timestamp}] [${levelName}] [${module}] ${lines[0]}`];
+    for (let i = 1; i < lines.length; i++) {
+      if (lines[i].trim()) {
+        result.push(`  ${lines[i]}`);
       }
     }
-  } catch (e) {
-    console.error(`[Logger] 写入失败: ${e}`);
-  } finally {
-    isWriting = false;
-    // 如果在写入过程中有新日志加入，再次触发
-    if (logQueue.length > 0) {
-      flushQueue();
-    }
+    return result.join('\n');
   }
 }
 
 /**
  * 核心日志写入函数
+ * 统一处理控制台、SSE、文件三个输出
  *
  * @param {number} level - 日志级别
  * @param {string} module - 模块名称
  * @param {string} message - 日志消息
  */
-function writeLog(level: number, module: string, message: string): void {
+async function writeLog(level: number, module: string, message: string): Promise<void> {
   const timestamp = getBeijingTimestamp();
 
-  // 修正 LogLevel 枚举映射：
-  // DEBUG=0 -> DEBUG
-  // INFO=1 -> INFO
-  // ERROR=2 -> ERROR
+  // 修正 LogLevel 枚举映射
   let actualLevelName = "INFO";
   if (level === LogLevel.DEBUG) actualLevelName = "DEBUG";
   else if (level === LogLevel.ERROR) actualLevelName = "ERROR";
@@ -385,22 +261,27 @@ function writeLog(level: number, module: string, message: string): void {
   };
 
   // 处理日志（缓存、去重、推送）
-  processLogEntry(entry, false);
+  processLogEntry(entry);
 
-  // 控制台输出（仅当级别满足配置要求时）
+  // 格式化日志消息
+  const formattedMessage = formatLogMessage(level, timestamp, actualLevelName, module, message);
+
+  // 控制台输出
   if (level >= config.level) {
     const color = level === LogLevel.ERROR
       ? "\x1b[31m"
       : (level === LogLevel.DEBUG ? "\x1b[34m" : "\x1b[32m");
     const reset = "\x1b[0m";
-    console.log(`${color}[${timestamp}] [${actualLevelName}] [${module}] ${message}${reset}`);
+    console.log(`${color}${formattedMessage}${reset}`);
   }
 
-  // 文件输出 (加入队列)
+  // 文件输出（同步写入）
   if (config.fileEnabled) {
-    const line = `[${timestamp}] [${actualLevelName}] [${module}] ${message}\n`;
-    logQueue.push(new TextEncoder().encode(line));
-    flushQueue();
+    await rotateLogFileIfNeeded();
+    if (logFile) {
+      const encoder = new TextEncoder();
+      await logFile.write(encoder.encode(formattedMessage + '\n'));
+    }
   }
 }
 
@@ -451,7 +332,7 @@ export function configureLogger(opts: Partial<LoggerConfig>): void {
 
 /**
  * 初始化日志模块
- * 创建日志目录，打开日志文件，并启动监听
+ * 创建日志目录，打开日志文件
  */
 export async function initLogger(): Promise<void> {
   try {
@@ -464,14 +345,8 @@ export async function initLogger(): Promise<void> {
   try {
     logFile = await Deno.open(logPath, { create: true, append: true });
     const encoder = new TextEncoder();
-    const sep = "\n" + "=".repeat(50) + "\n";
-
-    // 使用队列写入启动信息
-    logQueue.push(encoder.encode(`${sep}[${getBeijingTimestamp()}] 启动${sep}`));
-    flushQueue();
-
-    // 启动文件监听
-    startFileWatcher(logPath);
+    const sep = "=".repeat(50) + "\n";
+    await logFile.write(encoder.encode(`${sep}[${getBeijingTimestamp()}] 启动\n${sep}`));
   } catch {
     // 如果无法打开文件，降级为仅控制台输出
     config.fileEnabled = false;
@@ -480,27 +355,14 @@ export async function initLogger(): Promise<void> {
 
 /**
  * 关闭日志模块
- * 关闭文件句柄和监听器
+ * 关闭文件句柄
  */
 export async function closeLogger(): Promise<void> {
-  // 停止文件监听
-  if (fileWatcher) {
-    try {
-      fileWatcher.close();
-    } catch { /* ignore */ }
-    fileWatcher = null;
-  }
-
-  // 等待队列清空
-  while (logQueue.length > 0) {
-    await new Promise((r) => setTimeout(r, 10));
-  }
-
   if (logFile) {
     try {
       const encoder = new TextEncoder();
-      const sep = "\n" + "=".repeat(50) + "\n";
-      await logFile.write(encoder.encode(`${sep}[${getBeijingTimestamp()}] 关闭${sep}`));
+      const sep = "=".repeat(50) + "\n";
+      await logFile.write(encoder.encode(`\n${sep}[${getBeijingTimestamp()}] 关闭\n${sep}`));
       logFile.close();
     } catch { /* 忽略关闭错误 */ }
     logFile = null;
@@ -576,7 +438,7 @@ export function logRequestEnd(
     }
 
     const msg = `${method} ${url} ${status} (${duration}ms)`;
-    writeLog(LogLevel.INFO, "HTTP", msg); // 正常请求使用 INFO 级别
+    writeLog(LogLevel.INFO, "HTTP", msg);
   }
 }
 
@@ -605,7 +467,7 @@ export function logApiCallEnd(
 ): void {
   const status = success ? "成功" : "失败";
   writeLog(
-    success ? LogLevel.INFO : LogLevel.ERROR,
+    success ? LogLevel.DEBUG : LogLevel.ERROR,
     provider,
     `API ${op} ${status} (${duration}ms)`,
   );

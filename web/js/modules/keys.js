@@ -218,7 +218,9 @@ async function loadKeys(provider) {
       tr.onmouseout = () => tr.style.background = "transparent";
 
       const lastUsed = k.lastUsed ? new Date(k.lastUsed).toLocaleString() : "从未";
-      const keyDisplay = k.key.length > 8 ? k.key.substring(0, 8) + "..." + k.key.slice(-4) : k.key;
+      const keyDisplay = k.key && typeof k.key === "string" && k.key.length > 8
+        ? k.key.substring(0, 8) + "..." + k.key.slice(-4)
+        : (k.key || "********");
       const successRate = k.totalCalls > 0
         ? Math.round((k.successCount / k.totalCalls) * 100) + "%"
         : "-";
@@ -229,7 +231,7 @@ async function loadKeys(provider) {
         escapeHtml(k.name)
       }</div>
                     <div style="font-size: 12px; color: var(--text-secondary);">ID: ${
-        k.id.slice(0, 8)
+        k.id && typeof k.id === "string" ? k.id.slice(0, 8) : "未知"
       }</div>
                 </td>
                 <td style="padding: 16px 24px;">
@@ -241,7 +243,7 @@ async function loadKeys(provider) {
                     <label class="switch" style="transform: scale(0.8); transform-origin: left center;">
                         <input type="checkbox" ${
         k.enabled ? "checked" : ""
-      } onchange="globalThis.toggleKeyStatus('${k.id}', this.checked)">
+      } onchange="globalThis.toggleKeyStatus('${escapeHtml(k.id)}', this.checked)">
                         <span class="slider"></span>
                     </label>
                     <span style="font-size: 12px; color: ${
@@ -256,7 +258,7 @@ async function loadKeys(provider) {
                     <div style="font-size: 12px; color: var(--text-secondary);">上次: ${lastUsed}</div>
                 </td>
                 <td style="padding: 16px 24px; text-align: right;">
-                    <button class="btn icon-btn" onclick="globalThis.deleteKey('${k.id}')" title="删除" style="color: var(--error);">
+                    <button class="btn icon-btn" onclick="globalThis.deleteKey('${escapeHtml(k.id)}')" title="删除" style="color: var(--error);">
                         <i class="ri-delete-bin-line"></i>
                     </button>
                 </td>
@@ -306,17 +308,22 @@ async function toggleKeyStatus(id, enabled) {
  * @param {string} id - Key ID
  */
 async function deleteKey(id) {
+  console.log("[DEBUG deleteKey] Called with id:", id, "type:", typeof id);
   if (!confirm("确定要删除这个 Key 吗？")) return;
+  console.log("[DEBUG deleteKey] User confirmed, sending request...");
+
+  const requestBody = {
+    action: "delete",
+    provider: currentProvider,
+    id,
+  };
+  console.log("[DEBUG deleteKey] Request body:", JSON.stringify(requestBody));
 
   try {
     const res = await apiFetch("/api/key-pool", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        action: "delete",
-        provider: currentProvider,
-        id,
-      }),
+      body: JSON.stringify(requestBody),
     });
 
     if (!res.ok) throw new Error("删除失败");

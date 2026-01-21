@@ -123,6 +123,17 @@ export async function base64ToUrl(base64: string, mimeType: string = "image/png"
   }
 
   const result = await response.json();
+  
+  // 兼容两种响应格式：
+  // 1. 标准格式: {code: 200, data: {url: "..."}}
+  // 2. 数组格式: [{src: "..."}]
+  if (Array.isArray(result) && result.length > 0 && result[0].src) {
+    // 数组格式：拼接完整 URL
+    const relativePath = result[0].src;
+    const baseUrl = ImageBedConfig.baseUrl.replace(/\/$/, '');
+    return `${baseUrl}${relativePath}`;
+  }
+  
   if (result.code !== 200 || !result.data?.url) {
     throw new Error(`图床响应异常: ${JSON.stringify(result)}`);
   }

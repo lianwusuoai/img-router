@@ -4,9 +4,9 @@ services:
     image: img-router:latest
     container_name: img-router-proxy
     ports:
-      - "10090:10090"
+      - "10001:10001"
     environment:
-      - PORT=10090
+      - PORT=10001
       - IMAGE_BED_BASE_URL=${IMAGE_BED_BASE_URL}
       - IMAGE_BED_AUTH_CODE=${IMAGE_BED_AUTH_CODE}
       - IMAGE_BED_UPLOAD_FOLDER=${IMAGE_BED_UPLOAD_FOLDER}

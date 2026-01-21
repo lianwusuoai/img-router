@@ -19,9 +19,10 @@ export async function renderGallery(container) {
   const formatDate = (ts) => {
     const d = new Date(ts);
     const pad = (n) => n.toString().padStart(2, "0");
+    const padMs = (n) => n.toString().padStart(3, "0");
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${
       pad(d.getMinutes())
-    }`;
+    }:${pad(d.getSeconds())}.${padMs(d.getMilliseconds())}`;
   };
 
   // 辅助函数：计算比例

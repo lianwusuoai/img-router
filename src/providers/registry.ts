@@ -56,26 +56,48 @@ class ProviderRegistry {
       pollinationsProvider,
     ];
 
-    const successList: string[] = [];
-    const failList: string[] = [];
-
     for (const provider of builtinProviders) {
       try {
         this.register(provider);
-        successList.push(provider.name);
       } catch (e) {
         const errorMsg = e instanceof Error ? e.message : String(e);
-        failList.push(`${provider.name}(${errorMsg})`);
+        debug(MODULE, `注册 ${provider.name} 失败: ${errorMsg}`);
+      }
+    }
+  }
+
+  /**
+   * 获取 Provider 注册摘要（用于启动日志）
+   */
+  getRegistrationSummary(): string {
+    const builtinProviders = [
+      doubaoProvider,
+      giteeProvider,
+      modelScopeProvider,
+      huggingFaceProvider,
+      pollinationsProvider,
+    ];
+
+    const enabledList: string[] = [];
+    const disabledList: string[] = [];
+
+    for (const provider of builtinProviders) {
+      if (this.has(provider.name)) {
+        enabledList.push(provider.name);
+      } else {
+        disabledList.push(provider.name);
       }
     }
 
-    const successStr = successList.length > 0 ? successList.join(", ") : "无";
-    const failStr = failList.length > 0 ? failList.join(", ") : "无";
-
-    const report =
-      `\n ✅ 已注册Provider(${successList.length}): ${successStr}\n ❌ 未注册Provider(${failList.length}): ${failStr}`;
-
-    debug(MODULE, report);
+    const enabledSummary = enabledList.length > 0
+      ? `已启用 ${enabledList.length}/${builtinProviders.length}: ${enabledList.join(", ")}`
+      : "";
+    const disabledSummary = disabledList.length > 0
+      ? `未启用 ${disabledList.length}/${builtinProviders.length}: ${disabledList.join(", ")}`
+      : "";
+    
+    const parts = [enabledSummary, disabledSummary].filter(p => p);
+    return parts.length > 0 ? parts.join("; ") : "无可用Provider";
   }
 
   /**
@@ -266,7 +288,6 @@ class ProviderRegistry {
     const reg = this.registrations.get(name);
     if (reg) {
       reg.enabled = true;
-      info(MODULE, `已启用 Provider: ${name}`);
       return true;
     }
     return false;

@@ -352,7 +352,7 @@ export async function handleChatCompletions(req: Request): Promise<Response> {
         },
       });
 
-      info("HTTP", `响应完成 (流式)`);
+      debug("HTTP", `响应完成 (流式)`);
       logRequestEnd(requestId, req.method, url.pathname, 200, Date.now() - startTime);
       return new Response(stream, {
         headers: {
@@ -377,7 +377,7 @@ export async function handleChatCompletions(req: Request): Promise<Response> {
       usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
     });
 
-    info("HTTP", `响应完成 (JSON)`);
+    debug("HTTP", `响应完成 (JSON)`);
     logRequestEnd(requestId, req.method, url.pathname, 200, Date.now() - startTime);
 
     return new Response(responseBody, {

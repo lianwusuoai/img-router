@@ -344,7 +344,8 @@ export class ModelScopeProvider extends BaseProvider {
     info("ModelScope", `任务已提交, Task ID: ${taskId}`);
 
     // 2. 轮询任务状态
-    const maxAttempts = 120; // 10分钟超时
+    // 根据 API 超时时间动态计算最大轮询次数（每次轮询间隔 5 秒）
+    const maxAttempts = Math.max(12, Math.ceil((options.timeoutMs || 60000) / 5000));
     let pollingAttempts = 0;
     let invalidResponseStreak = 0;
     let lastPollError: string | null = null;

@@ -979,6 +979,11 @@ async function routeRequest(req: Request, ctx: RequestContext): Promise<Response
   const { method } = req;
 
   debug("HTTP", `Request: ${method} ${pathname}`);
+  
+  // 特别记录 key-pool 相关的请求
+  if (pathname.includes("key-pool")) {
+    debug("KeyPool", `Received request - method: ${method}, pathname: "${pathname}", exact match: ${pathname === "/api/key-pool"}`);
+  }
 
   // 健康检查端点（允许 GET）
   if (pathname === "/health" && method === "GET") {
@@ -1052,7 +1057,9 @@ async function routeRequest(req: Request, ctx: RequestContext): Promise<Response
   // 图片存储静态资源
   if (pathname.startsWith("/storage/")) {
     try {
-      const filePath = `data${pathname}`; // 映射到 data/storage/xxx
+      // 解码 URL 路径，处理空格等特殊字符
+      const decodedPath = decodeURIComponent(pathname);
+      const filePath = `data${decodedPath}`; // 映射到 data/storage/xxx
       const file = await Deno.open(filePath, { read: true });
       const stat = await file.stat();
 
@@ -1388,6 +1395,7 @@ async function routeRequest(req: Request, ctx: RequestContext): Promise<Response
 
     // 管理 API：密钥池管理
     case "/api/key-pool":
+      debug("KeyPool", `Received ${method} request to /api/key-pool`);
       if (method === "GET") {
         const provider = ctx.url.searchParams.get("provider");
         if (!provider) {
@@ -1397,18 +1405,33 @@ async function routeRequest(req: Request, ctx: RequestContext): Promise<Response
           });
         }
         const pool = getKeyPool(provider);
+        // Debug: Log pool data to diagnose the issue
+        console.log(`[DEBUG] Key pool for provider "${provider}":`, JSON.stringify(pool, null, 2));
+        console.log(`[DEBUG] Pool length:`, pool.length);
+        pool.forEach((k, idx) => {
+          console.log(`[DEBUG] Key item ${idx}:`, JSON.stringify(k));
+          console.log(`[DEBUG] Key item ${idx} - key type:`, typeof k.key, `key value:`, k.key);
+        });
+        
         // Security: Mask keys in response
         const safePool = pool.map((k) => ({
           ...k,
-          key: k.key && k.key.length > 8 ? `${k.key.slice(0, 4)}...${k.key.slice(-4)}` : "********",
+          key: k.key && typeof k.key === "string" && k.key.length > 8
+            ? `${k.key.slice(0, 4)}...${k.key.slice(-4)}`
+            : "********",
         }));
         return new Response(JSON.stringify({ pool: safePool }), {
           headers: { "Content-Type": "application/json" },
         });
       }
       if (method === "POST") {
+        debug("KeyPool", "POST request received");
+        debug("KeyPool", `Headers: ${JSON.stringify(Object.fromEntries(req.headers.entries()))}`);
+        
         try {
+          debug("KeyPool", "Parsing body...");
           const body = await req.json() as KeyPoolUpdatePayload;
+          debug("KeyPool", `Body parsed: ${JSON.stringify(body)}`);
           const { provider, keyItem, action, id, keys, format } = body;
 
           if (!provider) throw new Error("Missing provider");
@@ -1488,8 +1511,19 @@ async function routeRequest(req: Request, ctx: RequestContext): Promise<Response
             if (!id) throw new Error("Missing id");
             newPool = pool.map((k) => k.id === id ? { ...k, ...keyItem } : k);
           } else if (action === "delete") {
-            if (!id) throw new Error("Missing id");
+            debug("KeyPool", `Delete action - provider: ${provider}, id: ${id}, id type: ${typeof id}`);
+            if (!id) {
+              error("KeyPool", `Delete failed: Missing id parameter`);
+              throw new Error("Missing id parameter");
+            }
+            const beforeCount = pool.length;
             newPool = pool.filter((k) => k.id !== id);
+            const afterCount = newPool.length;
+            debug("KeyPool", `Delete result - before: ${beforeCount}, after: ${afterCount}, removed: ${beforeCount - afterCount}`);
+            if (beforeCount === afterCount) {
+              error("KeyPool", `Delete failed: Key with id "${id}" not found in pool`);
+              throw new Error(`Key with id "${id}" not found`);
+            }
           } else {
             throw new Error("Invalid action");
           }

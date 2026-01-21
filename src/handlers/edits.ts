@@ -8,6 +8,8 @@
  * - 支持 **JSON**：兼容部分客户端，通过 Base64 或 URL 传递图片。
  * - **自动路由**：根据 Authorization Header 中的 API Key 自动路由到对应的 Provider。
  * - **格式兼容**：返回 OpenAI Images API 兼容的响应格式。
+ * - **提示词优化**：支持翻译和扩充提示词
+ * - **图片存储**：自动保存生成的图片到本地和 S3
  *
  * 注意事项：
  * - 所有的 Provider 实现都统一接收 `ImageGenerationRequest`，其中 `images` 数组包含所有输入图片。
@@ -15,7 +17,7 @@
  */
 
 import { encodeBase64 } from "@std/encoding/base64";
-import { getProviderTaskDefaults } from "../config/manager.ts";
+import { getPromptOptimizerConfig, getProviderTaskDefaults } from "../config/manager.ts";
 import type {
   ImageData,
   ImageGenerationRequest,
@@ -27,6 +29,8 @@ import { providerRegistry } from "../providers/registry.ts";
 import { buildDataUri, normalizeAndCompressInputImages, urlToBase64 } from "../utils/image.ts";
 import { debug, error, generateRequestId, info } from "../core/logger.ts";
 import { extractPromptAndImages, normalizeMessageContent } from "./chat.ts";
+import { promptOptimizerService } from "../core/prompt-optimizer.ts";
+import { storageService } from "../core/storage.ts";
 
 /**
  * 将 File 对象转换为 Data URI
@@ -52,9 +56,11 @@ async function fileToDataUri(file: File): Promise<string> {
  * 2. **请求解析**：
  *    - 如果是 `multipart/form-data`：解析 Form Data，提取文件并转换为 Data URI。
  *    - 如果是 `application/json`：解析 JSON Body，提取 Base64 或 URL 图片。
- * 3. **图片预处理**：统一压缩和格式化输入图片。
- * 4. **Provider 调用**：执行图片编辑生成。
- * 5. **响应构建**：根据 `response_format` 返回 URL 或 Base64 JSON。
+ * 3. **提示词优化**：翻译和扩充提示词
+ * 4. **图片预处理**：统一压缩和格式化输入图片。
+ * 5. **Provider 调用**：执行图片编辑生成。
+ * 6. **图片存储**：保存生成的图片
+ * 7. **响应构建**：根据 `response_format` 返回 URL 或 Base64 JSON。
  *
  * @param req - HTTP 请求对象
  * @returns HTTP 响应对象
@@ -195,23 +201,106 @@ export async function handleImagesEdits(req: Request): Promise<Response> {
       );
     }
 
-    // 3. 图片预处理
+    // 3. 提示词优化
+    const originalPrompt = prompt;
+    let processedPrompt = prompt;
+    
+    try {
+      const optimizerConfig = getPromptOptimizerConfig();
+      const defaults = getProviderTaskDefaults(provider.name, "edit");
+      const imageCount = (defaults.n !== undefined && defaults.n !== null) ? defaults.n : 1;
+      
+      const shouldTranslate = optimizerConfig?.enableTranslate !== false;
+      const shouldExpand = optimizerConfig?.enableExpand === true;
+      
+      // 根据不同场景处理提示词优化（与 images.ts 逻辑一致）
+      if (shouldTranslate && shouldExpand) {
+        // 场景1: 同时开启翻译+扩充
+        if (imageCount > 1) {
+          // 多图：先为每张图翻译，然后对每个翻译结果扩充
+          const translatedPrompts: string[] = [];
+          
+          // 步骤1: 为每张图翻译（调用 n 次）
+          for (let i = 1; i <= imageCount; i++) {
+            const translated = await promptOptimizerService.processPrompt(prompt, {
+              translate: true,
+              expand: false,
+              imageIndex: i,
+            });
+            translatedPrompts.push(translated);
+          }
+          
+          // 步骤2: 对每个翻译结果扩充（再调用 n 次）
+          for (let i = 1; i <= imageCount; i++) {
+            const expanded = await promptOptimizerService.processPrompt(translatedPrompts[i - 1], {
+              translate: false,
+              expand: true,
+              imageIndex: i,
+            });
+            // 使用最后一次的结果
+            if (i === imageCount) {
+              processedPrompt = expanded;
+            }
+          }
+        } else {
+          // 单图：先翻译，再扩充（调用 2 次）
+          const translated = await promptOptimizerService.processPrompt(prompt, {
+            translate: true,
+            expand: false,
+          });
+          processedPrompt = await promptOptimizerService.processPrompt(translated, {
+            translate: false,
+            expand: true,
+          });
+        }
+      } else if (shouldTranslate || shouldExpand) {
+        // 场景2: 仅翻译 或 仅扩充
+        if (imageCount > 1) {
+          // 多图：为每张图调用一次（调用 n 次）
+          for (let i = 1; i <= imageCount; i++) {
+            const optimized = await promptOptimizerService.processPrompt(prompt, {
+              translate: shouldTranslate,
+              expand: shouldExpand,
+              imageIndex: i,
+            });
+            // 使用最后一次的结果
+            if (i === imageCount) {
+              processedPrompt = optimized;
+            }
+          }
+        } else {
+          // 单图：调用一次
+          processedPrompt = await promptOptimizerService.processPrompt(prompt, {
+            translate: shouldTranslate,
+            expand: shouldExpand,
+          });
+        }
+      }
+      // 场景3: 都未开启 → processedPrompt 保持为 prompt
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      info("PromptOptimizer", `提示词优化失败，使用原始提示词: ${msg}`);
+      processedPrompt = prompt;
+    }
+
+    // 4. 图片预处理
     const compressedImages = await normalizeAndCompressInputImages(images);
     const defaults = getProviderTaskDefaults(provider.name, "edit");
 
     debug(
       "Router",
-      `Images Edit Prompt: ${prompt.substring(0, 80)}... (完整长度: ${prompt.length})`,
+      `Images Edit Prompt: ${processedPrompt.substring(0, 80)}... (完整长度: ${processedPrompt.length})`,
     );
     debug("Router", `Images Edit 图片数量: ${images.length}`);
 
-    // 4. Provider 调用
+    // 5. Provider 调用
     const generationRequest: ImageGenerationRequest = {
-      prompt,
+      prompt: processedPrompt,
       images: compressedImages,
       model,
       size,
       steps: steps || defaults.steps || undefined,
+      n: (defaults.n !== undefined && defaults.n !== null) ? defaults.n : undefined,
       response_format: responseFormat,
     };
 
@@ -234,8 +323,32 @@ export async function handleImagesEdits(req: Request): Promise<Response> {
       throw new Error(generationResult.error || "图片编辑失败");
     }
 
-    // 5. 响应构建
+    // 6. 存储生成的图片
     const output: ImageData[] = generationResult.images || [];
+    
+    for (let i = 0; i < output.length; i++) {
+      const img = output[i];
+      if (img.b64_json) {
+        try {
+          await storageService.saveImage(img.b64_json, {
+            prompt: processedPrompt,
+            model: model || "edit",
+            seed: 0,
+            params: {
+              task: "edit",
+              originalPrompt: originalPrompt !== processedPrompt ? originalPrompt : undefined,
+              provider: provider.name,
+              requestId,
+            },
+          }, "png", i);
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          error("Storage", `保存图片失败: ${msg}`);
+        }
+      }
+    }
+
+    // 7. 响应构建
     const data: ImageData[] = [];
 
     for (const img of output) {
@@ -272,7 +385,7 @@ export async function handleImagesEdits(req: Request): Promise<Response> {
       data,
     };
 
-    info("HTTP", "响应完成 (Images Edit API)");
+    debug("HTTP", "响应完成 (Images Edit API)");
 
     return new Response(JSON.stringify(responseBody), {
       headers: {

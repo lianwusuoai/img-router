@@ -3,10 +3,7 @@
 > 智能图像生成网关 — 一个 OpenAI 兼容接口，通过 chat 自动路由多平台 AI 进行绘图服务，并提供 Key
 > 池、权重路由与 Web 管理面板。
 
-[![Deno](https://img.shields.io/badge/Deno-2.x-000000?logo=deno)](https://deno.land/)
-[![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker)](https://www.docker.com/)
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/lianwusuoai/img-router)
+[![Deno](https://img.shields.io/badge/Deno-2.x-000000?logo=deno)](https://deno.land/) [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker)](https://www.docker.com/) [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE) [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/lianwusuoai/img-router)
 
 ## 项目概述
 
@@ -276,13 +273,7 @@ GET /v1/models
 - 更新检查：`GET /api/update/check`
 - HF 映射：`GET/POST /api/config/hf-map`
 
-### 最佳实践
 
-- **生产环境优先启用后端模式**：设置 `system.globalAccessKey`，客户端只持有全局 Key；Provider Key
-  全部放入 Key 池。
-- **为限频渠道配置 Key 池**：Gitee/ModelScope/HuggingFace 建议多 Key 轮询，提高并发成功率。
-- **合理配置权重**：将更稳定/更便宜的渠道权重提高，作为优先执行目标。
-- **配置 S3 publicUrl**：若需公网访问画廊图片，配置 `storage.s3.publicUrl` 以返回可访问链接。
 
 ## 开发
 
@@ -293,3 +284,7 @@ deno task dev
 # 生产启动
 deno task start
 ```
+
+## 🌟 Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=lianwusuoai/img-router&type=Date)](https://star-history.com/#lianwusuoai/img-router&Date)

@@ -74,9 +74,10 @@ export class StorageService {
 
   private formatDate(date: Date): string {
     const pad = (n: number) => n.toString().padStart(2, "0");
+    const padMs = (n: number) => n.toString().padStart(3, "0");
     return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${
       pad(date.getHours())
-    }-${pad(date.getMinutes())}`;
+    }-${pad(date.getMinutes())}-${pad(date.getSeconds())}.${padMs(date.getMilliseconds())}`;
   }
 
   /**
@@ -86,6 +87,7 @@ export class StorageService {
     base64Data: string,
     metadata: Omit<ImageMetadata, "timestamp">,
     extension = "png",
+    index?: number,  // 添加可选的索引参数
   ): Promise<string | null> {
     await this.init();
 
@@ -120,9 +122,12 @@ export class StorageService {
         "unknown";
       // 清理 prompt (取前 20 字符)
       const promptSlug = metadata.prompt.slice(0, 20).replace(/[^a-zA-Z0-9]/g, "-") || "image";
-      const seed = metadata.seed || 0;
+      
+      // 使用 index 参数（如果提供）优先于 seed
+      // 这样可以确保多张图片生成时文件名唯一
+      const uniqueId = index !== undefined ? index : (metadata.seed || 0);
 
-      const filename = `${dateStr} ${modelShort}-${promptSlug}-${seed}.${finalExtension}`;
+      const filename = `${dateStr} ${modelShort}-${promptSlug}-${uniqueId}.${finalExtension}`;
       const metaFilename = `${filename}.json`; // 使用 .png.json 或直接 .json，这里为了唯一性关联，使用完整文件名+json
 
       const filePath = join(STORAGE_DIR, filename);
