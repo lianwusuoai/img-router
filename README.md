@@ -118,15 +118,54 @@ ImgRouter 是一个生产就绪的 AI 图像生成网关服务，旨在将多家
 - Docker Compose 2.0+
 - 默认端口：`10001`
 
-### 分步部署流程（Docker Compose）
+### 📦 Docker 镜像仓库
+ImgRouter 提供预构建的 Docker 镜像，支持多平台（linux/amd64、linux/arm64）：
+#### 🌏 国内用户（推荐使用阿里云镜像）
 
+```bash
+# 拉取最新版本
+docker pull crpi-yfnrhqcn81ace83g.cn-beijing.personal.cr.aliyuncs.com/lianwusuoai/img-router:latest
+# 拉取指定版本
+docker pull crpi-yfnrhqcn81ace83g.cn-beijing.personal.cr.aliyuncs.com/lianwusuoai/img-router:1.9.0
+```
+#### 🌍 国外用户（使用 Docker Hub）
+```bash
+# 拉取最新版本
+docker pull lianwusuoai/img-router:latest
+# 拉取指定版本
+docker pull lianwusuoai/img-router:1.9.0
+```
+
+**可用标签**：
+- `latest` - 最新稳定版本
+- `main` - 主分支最新构建
+- `x.y.z` - 特定版本号（如 1.9.0）
+
+### 分步部署流程
+
+#### 方式一：使用 Docker Compose（推荐）
 ```bash
 git clone https://github.com/lianwusuoai/img-router.git
 cd img-router
-
 docker-compose up -d
 ```
-
+#### 方式二：直接使用 Docker 运行
+**国内用户**：
+```bash
+docker run -d \
+--name img-router \
+-p 10001:10001 \
+-v $(pwd)/data:/app/data \
+crpi-yfnrhqcn81ace83g.cn-beijing.personal.cr.aliyuncs.com/lianwusuoai/img-router:latest
+```
+**国外用户**：
+```bash
+docker run -d \
+--name img-router \
+-p 10001:10001 \
+-v $(pwd)/data:/app/data \
+lianwusuoai/img-router:latest
+```
 访问管理面板：`http://localhost:10001/admin`
 
 ### 配置参数说明
