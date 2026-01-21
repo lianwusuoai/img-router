@@ -12,10 +12,10 @@ on:
   workflow_dispatch:
 
 env:
-  # Docker Hub 镜像名称（替换为你的用户名）
+  # Docker Hub 镜像名称
   DOCKERHUB_IMAGE: lianwusuoai/img-router
-  # 阿里云镜像名称（可选）
-  ALIYUN_IMAGE: registry.cn-hangzhou.aliyuncs.com/yournamespace/img-router
+  # 阿里云个人版实例镜像名称
+  ALIYUN_IMAGE: crpi-yfnrhqcn81ace83g.cn-beijing.personal.cr.aliyuncs.com/lianwusuoai/img-router
 
 jobs:
   build-and-push:
@@ -37,13 +37,13 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       
-      # 4. 登录阿里云容器镜像服务（可选）
-      - name: 登录阿里云
+      # 4. 登录阿里云容器镜像服务（个人版实例）
+      - name: 登录阿里云个人版实例
         uses: docker/login-action@v3
         with:
-          registry: registry.cn-hangzhou.aliyuncs.com
-          username: ${{ secrets.ALIYUN_USERNAME }}
-          password: ${{ secrets.ALIYUN_PASSWORD }}
+          registry: crpi-yfnrhqcn81ace83g.cn-beijing.personal.cr.aliyuncs.com
+          username: ${{ secrets.ALIYUN_REGISTRY_USER }}
+          password: ${{ secrets.ALIYUN_REGISTRY_PASSWORD }}
         continue-on-error: true
       
       # 5. 提取元数据（标签、版本号）
@@ -56,10 +56,7 @@ jobs:
             ${{ env.ALIYUN_IMAGE }}
           tags: |
             type=ref,event=branch
-            type=ref,event=pr
             type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
             type=raw,value=latest,enable={{is_default_branch}}
       
       # 6. 构建并推送 Docker 镜像
