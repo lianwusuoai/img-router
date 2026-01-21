@@ -24,5 +24,7 @@ Thumbs.db
 ehthumbs.db
 Desktop.ini
 
-# 本地参考目录（实际存在）
+# 本地参考目录
 docs/
+!docs/介绍/
+

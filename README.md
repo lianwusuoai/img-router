@@ -1,20 +1,30 @@
 # ImgRouter
 
-> 智能图像生成网关 — 一个 OpenAI 兼容接口，通过 chat 自动路由多平台 AI 进行绘图服务，并提供 Key
-> 池、权重路由与 Web 管理面板。
+> 🎨 智能AI 图像生成网关 — 基于 Deno 构建的高性能 OpenAI 兼容服务，聚合多平台 AI 绘图能力，提供智能路由、Key 池管理和完整的可视化运维方案。
 
 [![Deno](https://img.shields.io/badge/Deno-2.x-000000?logo=deno)](https://deno.land/) [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker)](https://www.docker.com/) [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE) [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/lianwusuoai/img-router)
 
-## 项目概述
+## 📖 项目概述
 
-ImgRouter 用于将多家 AI 图像服务聚合到一个统一入口，向客户端提供 OpenAI
-兼容的接口层，同时在服务端提供可靠性与运维能力：
+ImgRouter 是一个生产就绪的 AI 图像生成网关服务，旨在将多家 AI 图像服务平台（豆包/火山引擎、Gitee 模力方舟、ModelScope 魔搭、HuggingFace、Pollinations）聚合到统一的 OpenAI 兼容接口，为开发者提供：
 
-- **统一接口**：对外暴露 `/v1/*` 兼容端点，屏蔽各 Provider 的参数与返回差异。
-- **高可用路由**：支持按 Key 自动识别
-  Provider（中转模式-接入自用的newapi/gpt-loat等号池），也支持按权重级联故障转移（后端模式-自用少量key号池聚合）。
-- **可视化运维**：内置 Web 管理面板（渠道管理、Key 池、提示词优化器、日志、画廊）。
-- **存储**：本地 `data/storage/` 持久化；可选同步到 S3/R2（S3 兼容）
+### 🎯 核心价值
+
+- **🔌 统一接口**：完全兼容 OpenAI API 规范，支持 `/v1/chat/completions`、`/v1/images/*` 等标准端点，零成本接入现有生态
+- **🚀 智能路由**：
+  - **中转模式**：自动识别 API Key 格式（hf_*、ms-*、UUID 等），智能路由到对应平台
+  - **后端模式**：基于权重的级联故障转移，从 Key 池自动选择可用渠道
+  - **模型映射**：支持自定义模型 ID 映射，实现统一入口的灵活调度
+- **💼 多功能**：
+  - Web 管理面板（渠道配置、Key 池管理、提示词优化、实时日志、图片画廊）
+  - 本地存储 + S3/R2 兼容对象存储双重持久化
+  - 完整的请求链路追踪（RequestId）与日志系统
+  - 内置 SSRF 防护与 URL 安全校验
+- **⚡ 高性能架构**：
+  - 基于 Deno 运行时，原生 TypeScript，零配置部署
+  - Docker/Docker Compose 一键启动
+  - 支持流式响应（SSE）与异步任务
+  - 智能图床上传，Base64 与 URL 格式自动转换
 
 ## 特性
 
@@ -33,68 +43,28 @@ ImgRouter 用于将多家 AI 图像服务聚合到一个统一入口，向客户
 - **安全防护** - 内置 URL 安全校验与 SSRF 防护策略
 - **详细日志** - 请求/响应全链路日志（含 RequestId），并提供实时日志流订阅
 
-## 架构
+## 🏗️ 架构设计
+![架构设计](docs/介绍/架构设计.png)
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                       客户端请求                             │
-│               POST /v1/chat/completions     推介主力         │
-│               POST /v1/images/generations                   │
-│               POST /v1/images/edits                         │
-│               POST /v1/images/blend                         │
-└──────────────────────┬──────────────────────────────────────┘
-                       │
-                       ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    鉴权 / 运行模式                           │
-│                                                             │
-│  • 中转模式 Relay：Authorization = Provider Key              │
-│  • 后端模式 Backend：Authorization = GlobalAccessKey         │
-│                                                             │
-└──────────────────────┬──────────────────────────────────────┘
-                       │
-                       ▼
-┌─────────────────────────────────────────────────────────────┐
-│                API Key自动路由与执行计划                      │
-│                                                             │
-│  • hf_* 开头           → HuggingFace (抱抱脸)                │
-│  • ms-* 开头           → ModelScope (魔搭)                   │
-│  • pk_* / sk_* 开头    → Pollinations                        │
-│  • UUID 格式           → Doubao Seedream (火山引擎/豆包)      │
-│  • 30-60位字母数字     → Gitee (模力方舟)                     │
-│                                                             │
-└──────────────────────┬──────────────────────────────────────┘
-                       │
-           ┌───────────┼───────────┬───────────┬───────────┐
-           ▼           ▼           ▼           ▼           ▼
-   ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌───────────┐ ┌──────────────┐
-   │  Doubao  │ │  Gitee   │ │ModelScope│ │HuggingFace│ │Pollinations  │
-   └──────────┘ └──────────┘ └──────────┘ └───────────┘ └──────────────┘
-           │           │           │           │           │
-           └───────────┴───────────┴───────────┴───────────┘
-                       │
-                       ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    后处理与存储                              │
-│     • 格式统一（URL / b64_json / data URI）                  │
-│     • 自动落盘 data/storage/；可选同步 S3/R2                  │
-└──────────────────────┬──────────────────────────────────────┘
-                       │
-                       ▼
-              ┌─────────────────┐
-              │ OpenAI 兼容响应  │
-              └─────────────────┘
-```
+### WebUi
 
-### API Key 自动识别规则（中转模式）
+![仪表盘](docs/介绍/仪表盘.jpg)
+![系统设置](docs/介绍/系统设置.jpg)
+![渠道设置](docs/介绍/渠道设置.jpg)
+![key池管理](docs/介绍/key池管理.jpg)
+![图片画廊](docs/介绍/图片画廊.jpg)
+![提示词优化器](docs/介绍/提示词优化器.jpg)
+![检查更新](docs/介绍/检查更新.jpg)
 
-| 规则                 | Provider                |
-| -------------------- | ----------------------- |
-| `hf_*` 开头          | HuggingFace             |
-| `ms-` 开头           | ModelScope              |
-| `pk_*` / `sk_*` 开头 | Pollinations            |
-| UUID 格式            | Doubao（火山引擎/豆包） |
-| 30-60 位字母数字     | Gitee（模力方舟）       |
+### 🔑 API Key 自动识别规则（中转模式）
+
+| Key 格式 | 识别规则 | Provider | 示例 |
+|---------|---------|----------|------|
+| **HuggingFace** | `hf_` 开头 | HuggingFace 抱抱脸 | `hf_xxxxx...` |
+| **ModelScope** | `ms-` 开头 | ModelScope 魔搭 | `ms-xxxxx...` |
+| **Pollinations** | `pk_*` 或 `sk_*` 开头 | Pollinations | `pk_xxxxx...` |
+| **Doubao** | UUID 格式 (8-4-4-4-12) | 火山引擎/豆包 | `12345678-1234-...` |
+| **Gitee** | 30-60 位字母数字 | 模力方舟 | `abcd1234efgh...` |
 
 ### 运行模式说明
 

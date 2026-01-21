@@ -66,7 +66,7 @@ async function loadCacheFromDisk() {
       info("Update", "Loaded update cache from disk");
     }
   } catch (_e) {
-    // Ignore error (file not found or invalid)
+    // 忽略错误（文件不存在或无效）
   }
 }
 
@@ -819,11 +819,11 @@ async function handleUpdateCheck(req: Request): Promise<Response> {
 
     if (!res.ok) {
       // 403 限流或其他错误
-      info("Update", `GitHub API failed (${res.status}), trying fallback.`);
+      info("Update", `GitHub API 失败 (${res.status})，尝试降级方案。`);
 
       // 如果有缓存（即使过期），作为降级返回
       if (updateCache) {
-        info("Update", "Serving stale cache due to API error.");
+        info("Update", "由于 API 错误，返回陈旧缓存。");
         return new Response(
           JSON.stringify({
             ...(updateCache.data as object),

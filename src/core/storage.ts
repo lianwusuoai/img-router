@@ -97,8 +97,7 @@ export class StorageService {
       let binaryData = Uint8Array.from(atob(base64Clean), (c) => c.charCodeAt(0));
       let finalExtension = extension;
 
-      // WebP 转 PNG (如果开启且是 WebP)
-      // TODO: 添加系统设置开关，目前默认开启
+      // 自动将 WebP 格式转换为 PNG 以提升兼容性
       if (extension.toLowerCase() === "webp") {
         try {
           const blob = new Blob([binaryData], { type: "image/webp" });
