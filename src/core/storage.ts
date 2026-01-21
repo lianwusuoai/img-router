@@ -74,10 +74,10 @@ export class StorageService {
 
   private formatDate(date: Date): string {
     const pad = (n: number) => n.toString().padStart(2, "0");
-    const padMs = (n: number) => n.toString().padStart(3, "0");
+    const padMs = (n: number) => n.toString().padStart(2, "0");
     return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${
       pad(date.getHours())
-    }-${pad(date.getMinutes())}-${pad(date.getSeconds())}.${padMs(date.getMilliseconds())}`;
+    }-${pad(date.getMinutes())}-${pad(date.getSeconds())}.${padMs(Math.floor(date.getMilliseconds() / 10))}`;
   }
 
   /**

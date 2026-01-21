@@ -121,7 +121,7 @@ async function handleLocation() {
       await route.render(mainContent);
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
-      console.error("Route render failed:", e);
+      console.error("路由渲染失败:", e);
       mainContent.innerHTML = `
         <div class="card" style="margin: 16px; padding: 16px; border: 1px solid var(--border-color);">
           <div style="font-weight: 600; margin-bottom: 8px; color: var(--text-primary);">页面渲染失败</div>

@@ -265,7 +265,7 @@ async function loadChannelConfig() {
     const providers = Array.isArray(config.providers) ? config.providers : [];
     renderAllChannels(providers);
   } catch (e) {
-    console.error("Failed to load channel config:", e);
+    console.error("加载渠道配置失败:", e);
     document.getElementById("channelsContainer").innerHTML =
       '<div style="padding:20px; text-align:center; color:red;">加载失败</div>';
   }
@@ -296,7 +296,12 @@ function renderAllChannels(providers) {
     const textDefaults = providerDefaults.text || {};
     const editDefaults = providerDefaults.edit || {};
     const blendDefaults = providerDefaults.blend || {};
-    const isEnabled = provider.enabled !== false;
+    
+    // 🔧 修复：从 runtimeConfig 读取 enabled 状态，而不是从 provider 对象
+    // 如果 runtimeConfig 中有明确的 enabled 配置，使用它；否则使用 provider.enabled
+    const isEnabled = providerDefaults.enabled !== undefined
+      ? providerDefaults.enabled
+      : (provider.enabled !== false);
 
     let extraConfigHtml = "";
     if (provider.name === "HuggingFace") {
@@ -792,13 +797,14 @@ function updateModelScopeSizeOptions(modelSelect) {
  * 防抖保存
  */
 const debounceSave = debounce(async () => {
-  const payload = { providers: {} };
   const container = document.getElementById("channelsContainer");
 
   // 遍历所有 inputs
   const inputs = container.querySelectorAll(
     "input[data-provider], select[data-provider], textarea[data-provider]",
   );
+
+  const providersUpdate = {};
 
   inputs.forEach((input) => {
     const provider = input.dataset.provider;
@@ -815,24 +821,43 @@ const debounceSave = debounce(async () => {
       value = Number(value);
     }
 
-    if (!payload.providers[provider]) {
-      payload.providers[provider] = {};
+    if (!providersUpdate[provider]) {
+      providersUpdate[provider] = {};
     }
 
     // 处理 enabled 和 defaultSteps 等顶层属性
     if (field === "enabled") {
-      payload.providers[provider].enabled = value;
+      providersUpdate[provider].enabled = value;
     } else if (field === "defaultSteps") {
-      payload.providers[provider].defaultSteps = value;
+      providersUpdate[provider].defaultSteps = value;
     } else if (task) {
-      if (!payload.providers[provider][task]) {
-        payload.providers[provider][task] = {};
+      if (!providersUpdate[provider][task]) {
+        providersUpdate[provider][task] = {};
       }
-      payload.providers[provider][task][field] = value;
+      providersUpdate[provider][task][field] = value;
     }
   });
 
   try {
+    // 先获取当前完整的运行时配置
+    const configRes = await apiFetch("/api/config");
+    if (!configRes.ok) {
+      console.error("获取当前配置失败");
+      return;
+    }
+    const currentConfig = await configRes.json();
+    const runtimeConfig = currentConfig.runtimeConfig || {};
+
+    // 构建完整的 payload，保留其他字段
+    const payload = {
+      system: runtimeConfig.system || {},
+      providers: providersUpdate,
+      keyPools: runtimeConfig.keyPools || {},
+      promptOptimizer: runtimeConfig.promptOptimizer,
+      hfModelMap: runtimeConfig.hfModelMap,
+      storage: runtimeConfig.storage,
+    };
+
     const res = await apiFetch("/api/runtime-config", {
       method: "POST",
       body: JSON.stringify(payload),

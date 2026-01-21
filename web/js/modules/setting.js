@@ -363,7 +363,7 @@ async function loadSystemSettings() {
     setVal("compressThreshold", runtimeSystem.compressThreshold || 5);
     setVal("compressTarget", runtimeSystem.compressTarget || 2);
   } catch (e) {
-    console.error("Failed to load settings:", e);
+    console.error("加载设置失败:", e);
   }
 }
 

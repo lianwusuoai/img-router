@@ -262,4 +262,65 @@
   max-height: 100%;
   transform-origin: center center;
   user-select: none;
+  pointer-events: none; /* 图片本身不响应点击，避免关闭 Lightbox */
+  cursor: grab;
+}
+
+/* 固定头部样式 */
+.card-header {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  background: var(--surface);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+}
+
+/* Lightbox 左右导航按钮 */
+.gallery-lightbox-prev,
+.gallery-lightbox-next {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 50px;
+  height: 50px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  background: rgba(0, 0, 0, 0.4);
+  color: white;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  backdrop-filter: blur(6px);
+  transition: all 0.2s ease;
+  z-index: 10;
+}
+
+.gallery-lightbox-prev {
+  left: 20px;
+}
+
+.gallery-lightbox-next {
+  right: 20px;
+}
+
+.gallery-lightbox-prev:hover,
+.gallery-lightbox-next:hover {
+  background: rgba(0, 0, 0, 0.6);
+  transform: translateY(-50%) scale(1.1);
+}
+
+/* Lightbox 内容区域点击处理 */
+.gallery-lightbox-content {
+  pointer-events: none; /* 内容区域默认不响应点击 */
+}
+
+.gallery-lightbox-content > * {
+  pointer-events: auto; /* 但按钮可以点击 */
+}
+
+/* 拖拽时的光标样式 */
+.gallery-lightbox-img.dragging {
+  cursor: grabbing !important;
 }

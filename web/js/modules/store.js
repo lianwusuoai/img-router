@@ -69,7 +69,7 @@ class Store {
       this.notify();
       return config;
     } catch (e) {
-      console.error("Failed to load config:", e);
+      console.error("加载配置失败:", e);
       this.state.error = e;
       this.state.loading = false;
       this.notify();

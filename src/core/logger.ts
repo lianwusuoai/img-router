@@ -12,6 +12,11 @@
  * 统一输出格式：
  * - INFO：单行显示
  * - ERROR/DEBUG：多行格式化显示
+ *
+ * HTTP 请求日志级别策略：
+ * - ERROR：失败请求（状态码 >= 400）
+ * - INFO：关键业务操作（图片生成、密钥管理等）
+ * - DEBUG：常规请求（页面访问、配置查询、状态轮询等）
  */
 
 /** 北京时间偏移量 (UTC+8) */
@@ -22,7 +27,7 @@ const BEIJING_TIMEZONE_OFFSET = 8 * 60 * 60 * 1000;
  * 定义单条日志的数据结构
  */
 export interface LogEntry {
-  /** 格式化的时间戳 (YYYY-MM-DD HH:mm:ss.sss) */
+  /** 格式化的时间戳 (HH:mm:ss.ss) */
   timestamp: string;
   /** 日志级别枚举值 */
   level: LogLevel;
@@ -116,12 +121,16 @@ export function getRecentLogs(): LogEntry[] {
 
 /**
  * 获取北京时间格式化字符串
- * 格式: YYYY-MM-DD HH:mm:ss.sss
+ * 格式: HH:mm:ss.ss (只显示时间，毫秒保留2位)
  */
 function getBeijingTimestamp(): string {
   const now = new Date();
   const beijingTime = new Date(now.getTime() + BEIJING_TIMEZONE_OFFSET);
-  return beijingTime.toISOString().replace("T", " ").replace("Z", "");
+  const isoString = beijingTime.toISOString();
+  // 提取时间部分 HH:mm:ss.sss，然后截取到2位毫秒
+  const timePart = isoString.split("T")[1].replace("Z", "");
+  const [time, ms] = timePart.split(".");
+  return `${time}.${ms.substring(0, 2)}`;
 }
 
 /**
@@ -422,23 +431,21 @@ export function logRequestEnd(
     }`;
     writeLog(LogLevel.ERROR, "HTTP", msg);
   } else {
-    // 彻底屏蔽高频/低价值请求的成功日志（如管理后台页面导航和配置轮询）
-    const ignoredPaths = [
-      "/api/config",
-      "/api/key-pool",
-      "/favicon.ico",
-      "/admin",
-      "/setting",
-      "/channel",
-      "/keys",
+    // 关键业务操作使用 INFO 级别
+    const importantPaths = [
+      "/v1/images/generations",
+      "/v1/images/edits",
+      "/v1/images/variations",
+      "/api/keys",  // 密钥管理操作
     ];
 
-    if (ignoredPaths.some((p) => url.startsWith(p)) || url === "/") {
-      return;
-    }
-
+    // 常规请求使用 DEBUG 级别（页面访问、配置查询、状态轮询等）
     const msg = `${method} ${url} ${status} (${duration}ms)`;
-    writeLog(LogLevel.INFO, "HTTP", msg);
+    
+    // 判断是否为关键业务操作
+    const isImportant = importantPaths.some((p) => url.startsWith(p));
+    
+    writeLog(isImportant ? LogLevel.INFO : LogLevel.DEBUG, "HTTP", msg);
   }
 }
 

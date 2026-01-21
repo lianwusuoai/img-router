@@ -19,10 +19,10 @@ export async function renderGallery(container) {
   const formatDate = (ts) => {
     const d = new Date(ts);
     const pad = (n) => n.toString().padStart(2, "0");
-    const padMs = (n) => n.toString().padStart(3, "0");
+    const padMs = (n) => n.toString().padStart(2, "0");
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${
       pad(d.getMinutes())
-    }:${pad(d.getSeconds())}.${padMs(d.getMilliseconds())}`;
+    }:${pad(d.getSeconds())}.${padMs(Math.floor(d.getMilliseconds() / 10))}`;
   };
 
   // 辅助函数：计算比例
@@ -199,6 +199,12 @@ export async function renderGallery(container) {
                     <button class="gallery-lightbox-close" type="button" data-action="close" title="关闭">
                         <i class="ri-close-line"></i>
                     </button>
+                    <button class="gallery-lightbox-prev" type="button" title="上一张 (←)">
+                        <i class="ri-arrow-left-s-line"></i>
+                    </button>
+                    <button class="gallery-lightbox-next" type="button" title="下一张 (→)">
+                        <i class="ri-arrow-right-s-line"></i>
+                    </button>
                     <img class="gallery-lightbox-img" alt="">
                 </div>
             `;
@@ -211,6 +217,8 @@ export async function renderGallery(container) {
         dragging: false,
         lastX: 0,
         lastY: 0,
+        currentIndex: 0,
+        allImages: [],
       };
 
       const img = el.querySelector(".gallery-lightbox-img");
@@ -234,9 +242,6 @@ export async function renderGallery(container) {
         if (t.closest('[data-action="close"]')) close();
       });
 
-      document.addEventListener("keydown", (e) => {
-        if (e.key === "Escape" && el.classList.contains("open")) close();
-      });
 
       el.addEventListener(
         "wheel",
@@ -270,7 +275,7 @@ export async function renderGallery(container) {
         state.dragging = true;
         state.lastX = e.clientX;
         state.lastY = e.clientY;
-        img.style.cursor = "grabbing";
+        img.classList.add("dragging");
       });
 
       globalThis.addEventListener("mousemove", (e) => {
@@ -287,13 +292,63 @@ export async function renderGallery(container) {
       globalThis.addEventListener("mouseup", () => {
         if (!state.dragging) return;
         state.dragging = false;
-        img.style.cursor = "grab";
+        img.classList.remove("dragging");
       });
 
-      el.openWith = (url, alt) => {
+      // 导航函数
+      const navigate = (direction) => {
+        if (state.allImages.length === 0) return;
+        
+        state.currentIndex += direction;
+        if (state.currentIndex < 0) state.currentIndex = state.allImages.length - 1;
+        if (state.currentIndex >= state.allImages.length) state.currentIndex = 0;
+        
+        const imgData = state.allImages[state.currentIndex];
+        img.src = imgData.url;
+        img.alt = imgData.alt;
+        
+        // 重置缩放和位置
+        state.scale = 1;
+        state.tx = 0;
+        state.ty = 0;
+        apply();
+      };
+
+      // 左右箭头点击事件
+      el.querySelector('.gallery-lightbox-prev').addEventListener('click', (e) => {
+        e.stopPropagation();
+        navigate(-1);
+      });
+
+      el.querySelector('.gallery-lightbox-next').addEventListener('click', (e) => {
+        e.stopPropagation();
+        navigate(1);
+      });
+
+      // 键盘事件监听
+      const keydownHandler = (e) => {
+        if (!el.classList.contains('open')) return;
+        
+        if (e.key === 'ArrowLeft') {
+          e.preventDefault();
+          navigate(-1);
+        } else if (e.key === 'ArrowRight') {
+          e.preventDefault();
+          navigate(1);
+        } else if (e.key === 'Escape') {
+          close();
+        }
+      };
+
+      // 移除旧的 Escape 键监听，使用新的统一键盘处理
+      document.addEventListener('keydown', keydownHandler);
+
+      el.openWith = (url, alt, images, index) => {
+        state.allImages = images || [];
+        state.currentIndex = index || 0;
+        
         img.src = url;
         img.alt = alt || "";
-        img.style.cursor = "grab";
         state.scale = 1;
         state.tx = 0;
         state.ty = 0;
@@ -327,7 +382,7 @@ export async function renderGallery(container) {
           btn.innerHTML = originalIcon;
         }, 2000);
       } catch (err) {
-        console.error("Copy failed:", err);
+        console.error("复制失败:", err);
         alert("复制图片失败: " + (err && err.message ? err.message : String(err)));
         btn.innerHTML = '<i class="ri-error-warning-line"></i>';
         setTimeout(() => {
@@ -351,7 +406,7 @@ export async function renderGallery(container) {
           btn.style.borderColor = "";
         }, 2000);
       } catch (err) {
-        console.error("Copy text failed:", err);
+        console.error("复制文本失败:", err);
         alert("复制提示词失败");
       }
     };
@@ -540,14 +595,24 @@ export async function renderGallery(container) {
           e.preventDefault();
           const url = img.getAttribute("data-full-url") || img.getAttribute("src") || "";
           const alt = img.getAttribute("data-full-alt") || img.getAttribute("alt") || "";
+          
+          // 获取所有图片数据
+          const allImgs = Array.from(galleryContainer.querySelectorAll('.gallery-img')).map(imgEl => ({
+            url: imgEl.getAttribute("data-full-url") || imgEl.getAttribute("src") || "",
+            alt: imgEl.getAttribute("data-full-alt") || imgEl.getAttribute("alt") || ""
+          }));
+          
+          // 找到当前图片的索引
+          const currentIndex = Array.from(galleryContainer.querySelectorAll('.gallery-img')).indexOf(img);
+          
           const lb = ensureLightbox();
-          lb.openWith(url, alt);
+          lb.openWith(url, alt, allImgs, currentIndex);
         }
       });
       galleryContainer.dataset.bound = "1";
     }
   } catch (e) {
-    console.error("Failed to load gallery:", e);
+    console.error("加载画廊失败:", e);
     document.getElementById("gallery-container").innerHTML = `
             <div class="gallery-empty" style="color: var(--error);">
                 <i class="ri-error-warning-line" style="font-size: 32px; margin-bottom: 8px;"></i>

@@ -303,7 +303,6 @@ class ProviderRegistry {
     const reg = this.registrations.get(name);
     if (reg) {
       reg.enabled = false;
-      info(MODULE, `已禁用 Provider: ${name}`);
       return true;
     }
     return false;

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
 
-import { error } from "../core/logger.ts";
+import { error, info } from "../core/logger.ts";
 
 /**
  * 服务器配置接口
@@ -964,13 +964,13 @@ class ConfigManager {
       // 确保 data 目录存在
       const dataDir = path.dirname(this.runtimeConfigPath);
       if (!fs.existsSync(dataDir)) {
-        console.log("创建数据目录:", dataDir);
+        info("Config", `创建数据目录: ${dataDir}`);
         fs.mkdirSync(dataDir, { recursive: true });
       }
 
       // 优先尝试加载现有的 runtime-config.json
       if (fs.existsSync(this.runtimeConfigPath)) {
-        console.log("加载现有 runtime-config.json");
+        info("Config", "加载现有 runtime-config.json");
         const content = fs.readFileSync(this.runtimeConfigPath, "utf8");
         const loaded = JSON.parse(content);
         // 返回现有配置，保留所有用户设置
@@ -986,7 +986,7 @@ class ConfigManager {
 
       // 尝试加载旧位置的配置文件（兼容性处理）
       if (fs.existsSync(this.legacyRuntimeConfigPath)) {
-        console.log("迁移旧配置文件到新位置");
+        info("Config", "迁移旧配置文件到新位置");
         const content = fs.readFileSync(this.legacyRuntimeConfigPath, "utf8");
         const loaded = JSON.parse(content);
         const config = {
@@ -1003,7 +1003,7 @@ class ConfigManager {
       }
 
       // 只有在配置文件真正不存在时才创建默认配置
-      console.log("首次运行：创建默认 runtime-config.json");
+      info("Config", "首次运行：创建默认 runtime-config.json");
       const initialConfig = JSON.parse(JSON.stringify(DEFAULT_RUNTIME_CONFIG));
       fs.writeFileSync(this.runtimeConfigPath, JSON.stringify(initialConfig, null, 2), "utf8");
       return initialConfig;
@@ -1061,10 +1061,9 @@ class ConfigManager {
     // 2. 应用提供商覆盖 (启用状态)
     for (const [providerName, pConfig] of Object.entries(this.runtimeConfig.providers)) {
       if (pConfig.enabled !== undefined) {
-        // deno-lint-ignore no-explicit-any
-        const appProvider = (this.config.providers as any)[providerName];
+        const appProvider = (this.config.providers as Record<string, unknown>)[providerName];
         if (appProvider) {
-          appProvider.enabled = pConfig.enabled;
+          (appProvider as Record<string, unknown>).enabled = pConfig.enabled;
         }
       }
     }
@@ -1088,7 +1087,7 @@ class ConfigManager {
       }
       fs.writeFileSync(this.runtimeConfigPath, JSON.stringify(this.runtimeConfig, null, 2));
     } catch (e) {
-      console.error("保存运行时配置失败", e);
+      error("Config", `保存运行时配置失败: ${e}`);
     }
   }
 
@@ -1227,6 +1226,24 @@ class ConfigManager {
     this.runtimeConfig = newConfig;
     this.saveRuntimeConfig();
     this.applyRuntimeOverrides();
+    
+    // 同步更新 providerRegistry 的 enabled 状态
+    // 动态导入以避免循环依赖
+    import("../providers/registry.ts").then(({ providerRegistry }) => {
+      type ProviderName = "Doubao" | "Gitee" | "ModelScope" | "HuggingFace" | "Pollinations";
+      
+      for (const [providerName, pConfig] of Object.entries(newConfig.providers)) {
+        if (pConfig.enabled !== undefined) {
+          if (pConfig.enabled) {
+            providerRegistry.enable(providerName as ProviderName);
+          } else {
+            providerRegistry.disable(providerName as ProviderName);
+          }
+        }
+      }
+    }).catch((err) => {
+      error("Config", `Failed to sync provider registry in replaceRuntimeConfig: ${err}`);
+    });
   }
 
   /**

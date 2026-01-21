@@ -146,7 +146,7 @@ async function loadProviders() {
       listEl.appendChild(div);
     });
   } catch (e) {
-    console.error("Failed to load providers:", e);
+    console.error("加载提供商列表失败:", e);
   }
 }
 

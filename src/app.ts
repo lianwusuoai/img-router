@@ -38,14 +38,14 @@ import {
   updateKeyPool,
 } from "./config/manager.ts";
 import { providerRegistry } from "./providers/registry.ts";
-console.log("Loading app.ts...");
+info("App", "Loading app.ts...");
 import { promptOptimizerService } from "./core/prompt-optimizer.ts";
 import { storageService } from "./core/storage.ts";
 import type { ProviderName } from "./providers/base.ts";
 import { join } from "@std/path";
 
 // 调试日志：确保 promptOptimizerService 已加载
-console.log("[App] promptOptimizerService loaded:", !!promptOptimizerService);
+debug("App", `promptOptimizerService loaded: ${!!promptOptimizerService}`);
 
 // GitHub 更新检查缓存
 interface UpdateCache {
@@ -1406,11 +1406,11 @@ async function routeRequest(req: Request, ctx: RequestContext): Promise<Response
         }
         const pool = getKeyPool(provider);
         // Debug: Log pool data to diagnose the issue
-        console.log(`[DEBUG] Key pool for provider "${provider}":`, JSON.stringify(pool, null, 2));
-        console.log(`[DEBUG] Pool length:`, pool.length);
+        debug("KeyPool", `Key pool for provider "${provider}": ${JSON.stringify(pool, null, 2)}`);
+        debug("KeyPool", `Pool length: ${pool.length}`);
         pool.forEach((k, idx) => {
-          console.log(`[DEBUG] Key item ${idx}:`, JSON.stringify(k));
-          console.log(`[DEBUG] Key item ${idx} - key type:`, typeof k.key, `key value:`, k.key);
+          debug("KeyPool", `Key item ${idx}: ${JSON.stringify(k)}`);
+          debug("KeyPool", `Key item ${idx} - key type: ${typeof k.key}, key value: ${k.key}`);
         });
         
         // Security: Mask keys in response
@@ -1939,10 +1939,7 @@ async function routeRequest(req: Request, ctx: RequestContext): Promise<Response
           const body = await req.json();
 
           // Debug logs to verify inputs
-          console.log("[API] fetch-models request:", {
-            baseUrl: body.baseUrl,
-            apiKey: body.apiKey ? "present" : "empty",
-          });
+          debug("API", `fetch-models request: baseUrl=${body.baseUrl}, apiKey=${body.apiKey ? "present" : "empty"}`);
 
           if (!isRecord(body) || typeof body.baseUrl !== "string") {
             return new Response(JSON.stringify({ error: "Missing or invalid baseUrl" }), {
@@ -1964,7 +1961,7 @@ async function routeRequest(req: Request, ctx: RequestContext): Promise<Response
             headers: { "Content-Type": "application/json" },
           });
         } catch (e) {
-          console.error("[API] Fetch models failed:", e);
+          error("API", `Fetch models failed: ${e}`);
           return new Response(
             JSON.stringify({ ok: false, error: e instanceof Error ? e.message : String(e) }),
             {

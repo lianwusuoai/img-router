@@ -198,7 +198,7 @@ export async function renderUpdate(container) {
   const badge = container.querySelector("#badge-new-version");
 
   if (!checkBtn || !contentDiv) {
-    console.error("Required elements not found in update page");
+    console.error("更新页面中未找到必需的元素");
     return;
   }
 
@@ -241,7 +241,7 @@ async function loadLocalVersion(container) {
       return localVersionRaw;
     }
   } catch (e) {
-    console.error("[Update] Failed to load local version:", e);
+    console.error("[更新] 加载本地版本失败:", e);
   }
   return "0.0.0";
 }
@@ -306,7 +306,7 @@ async function performCheck(isManual, contentDiv, checkBtn, badge) {
     try {
       hasUpdate = compareVersions(latestVersionNorm, localVersion) > 0;
     } catch (err) {
-      console.error("Version comparison failed:", err);
+      console.error("版本比较失败:", err);
     }
 
     // 成功获取，重置重试计数
@@ -388,7 +388,7 @@ async function performCheck(isManual, contentDiv, checkBtn, badge) {
 
     console.log(`[Update] Check success. Local: ${localVersion}, Latest: ${latestVersion}`);
   } catch (e) {
-    console.error("[Update] Check failed:", e);
+    console.error("[更新] 检查失败:", e);
 
     // 错误处理策略
     if (isManual) {
@@ -438,7 +438,7 @@ function scheduleRetry(contentDiv, checkBtn, badge) {
 
   if (retryCount >= 1) {
     console.info(
-      "[AutoUpdate] Fast retry failed. Giving up and waiting for next scheduled hourly check.",
+      "[自动更新] 快速重试失败。放弃并等待下一次每小时定时检查。",
     );
     retryCount = 0; // 重置计数，确保下一次定时检查如果失败，仍能触发一次快速重试
     return;
@@ -447,7 +447,7 @@ function scheduleRetry(contentDiv, checkBtn, badge) {
   retryCount++;
   const delay = 60 * 1000; // 固定 1 分钟
 
-  console.log(`[AutoUpdate] Check failed. Retrying once in ${delay / 1000} seconds.`);
+  console.log(`[自动更新] 检查失败。将在 ${delay / 1000} 秒后重试一次。`);
 
   if (retryTimer) clearTimeout(retryTimer);
   retryTimer = setTimeout(() => {

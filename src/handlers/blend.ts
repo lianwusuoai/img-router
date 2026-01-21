@@ -16,11 +16,13 @@ import {
   getNextAvailableKey,
   getPromptOptimizerConfig,
   getProviderTaskDefaults,
+  getRuntimeConfig,
   getSystemConfig,
   reportKeyError,
   reportKeySuccess,
 } from "../config/manager.ts";
-import type { IProvider } from "../providers/base.ts";
+import type { IProvider, ProviderName } from "../providers/base.ts";
+import type { RuntimeProviderConfig } from "../config/manager.ts";
 import type {
   GenerationResult,
   ImageData,
@@ -119,6 +121,25 @@ export async function handleImagesBlend(req: Request): Promise<Response> {
 
     // 如果是后端模式，现在需要确定 Provider 和 Key
     if (usingBackendMode) {
+      // 获取启用的 Provider 列表
+      const runtimeConfig = getRuntimeConfig();
+      const providersConfig = runtimeConfig.providers as Record<string, RuntimeProviderConfig> | undefined;
+      const enabledProviders = Object.entries(providersConfig || {})
+        .filter(([_name, cfg]) => cfg.enabled === true)
+        .map(([name]) => name as ProviderName);
+
+      if (enabledProviders.length === 0) {
+        error("HTTP", "Backend mode: 没有启用的 Provider");
+        logRequestEnd(requestId, req.method, url.pathname, 503, 0, "no enabled providers");
+        return new Response(
+          JSON.stringify({ error: "No enabled providers available in backend mode" }),
+          {
+            status: 503,
+            headers: { "Content-Type": "application/json" },
+          },
+        );
+      }
+
       if (!requestBody.model) {
         error("HTTP", "后端模式下请求缺失 model 参数");
         logRequestEnd(requestId, req.method, url.pathname, 400, 0, "missing model");
@@ -130,6 +151,7 @@ export async function handleImagesBlend(req: Request): Promise<Response> {
           },
         );
       }
+
       provider = providerRegistry.getProviderByModel(requestBody.model);
       if (!provider) {
         error("HTTP", `后端模式下请求了不支持的模型: ${requestBody.model}`);
@@ -138,6 +160,19 @@ export async function handleImagesBlend(req: Request): Promise<Response> {
           status: 400,
           headers: { "Content-Type": "application/json" },
         });
+      }
+
+      // 验证该 Provider 是否启用
+      if (!enabledProviders.includes(provider.name)) {
+        error("HTTP", `模型 ${requestBody.model} 的 Provider (${provider.name}) 未启用`);
+        logRequestEnd(requestId, req.method, url.pathname, 400, 0, "provider not enabled");
+        return new Response(
+          JSON.stringify({ error: `Provider ${provider.name} is not enabled` }),
+          {
+            status: 400,
+            headers: { "Content-Type": "application/json" },
+          },
+        );
       }
 
       info("HTTP", `路由到 ${provider.name} (Backend Mode)`);

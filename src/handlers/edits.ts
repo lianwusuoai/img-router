@@ -5,11 +5,12 @@
  *
  * 功能特性：
  * - 支持 **multipart/form-data**：标准 OpenAI 风格，适合上传文件。
- * - 支持 **JSON**：兼容部分客户端，通过 Base64 或 URL 传递图片。
+ * - 支持 **JSON**：兼容部分客户端,通过 Base64 或 URL 传递图片。
  * - **自动路由**：根据 Authorization Header 中的 API Key 自动路由到对应的 Provider。
  * - **格式兼容**：返回 OpenAI Images API 兼容的响应格式。
  * - **提示词优化**：支持翻译和扩充提示词
  * - **图片存储**：自动保存生成的图片到本地和 S3
+ * - **后端模式支持**：支持全局密钥和 Key 池管理
  *
  * 注意事项：
  * - 所有的 Provider 实现都统一接收 `ImageGenerationRequest`，其中 `images` 数组包含所有输入图片。
@@ -17,7 +18,7 @@
  */
 
 import { encodeBase64 } from "@std/encoding/base64";
-import { getPromptOptimizerConfig, getProviderTaskDefaults } from "../config/manager.ts";
+import { getPromptOptimizerConfig, getProviderTaskDefaults, getRuntimeConfig, getSystemConfig } from "../config/manager.ts";
 import type {
   ImageData,
   ImageGenerationRequest,
@@ -25,12 +26,15 @@ import type {
   ImagesResponse,
   Message,
 } from "../types/index.ts";
+import type { IProvider, ProviderName } from "../providers/base.ts";
+import type { RuntimeProviderConfig } from "../config/manager.ts";
 import { providerRegistry } from "../providers/registry.ts";
 import { buildDataUri, normalizeAndCompressInputImages, urlToBase64 } from "../utils/image.ts";
 import { debug, error, generateRequestId, info } from "../core/logger.ts";
 import { extractPromptAndImages, normalizeMessageContent } from "./chat.ts";
 import { promptOptimizerService } from "../core/prompt-optimizer.ts";
 import { storageService } from "../core/storage.ts";
+import { keyManager } from "../core/key-manager.ts";
 
 /**
  * 将 File 对象转换为 Data URI
@@ -68,33 +72,126 @@ async function fileToDataUri(file: File): Promise<string> {
 export async function handleImagesEdits(req: Request): Promise<Response> {
   const _url = new URL(req.url);
   const requestId = generateRequestId();
+  const systemConfig = getSystemConfig();
+  const modes = systemConfig.modes || { relay: true, backend: false };
 
-  // 1. 鉴权与路由
-  const authHeader = req.headers.get("Authorization");
-  const apiKey = authHeader?.replace("Bearer ", "").trim();
-  if (!apiKey) {
-    error("HTTP", "Authorization header 缺失");
+  debug("HTTP", `[${requestId}] Images Edit 请求开始 - Modes: relay=${modes.relay}, backend=${modes.backend}`);
 
-    return new Response(JSON.stringify({ error: "Authorization header missing" }), {
-      status: 401,
-      headers: { "Content-Type": "application/json" },
-    });
-  }
-
-  const provider = providerRegistry.detectProvider(apiKey);
-  if (!provider) {
-    error("HTTP", "API Key 格式无法识别");
-
+  // 0. 检查系统是否完全关闭
+  if (!modes.relay && !modes.backend) {
+    error("HTTP", `[${requestId}] 服务未启动：relay 和 backend 模式都已关闭`);
     return new Response(
-      JSON.stringify({ error: "Invalid API Key format. Could not detect provider." }),
-      {
-        status: 401,
-        headers: { "Content-Type": "application/json" },
-      },
+      JSON.stringify({ error: "服务未启动：请开启中转模式或后端模式" }),
+      { status: 503, headers: { "Content-Type": "application/json" } },
     );
   }
 
-  info("HTTP", `路由到 ${provider.name} (Images Edit)`);
+  // 1. 鉴权与路由
+  const authHeader = req.headers.get("Authorization");
+  const apiKey = authHeader?.replace("Bearer ", "").trim() || "";
+
+  debug("HTTP", `[${requestId}] API Key 长度: ${apiKey.length}, 前缀: ${apiKey.substring(0, Math.min(10, apiKey.length))}...`);
+
+  // 尝试检测 Provider (基于 Key 格式) - Relay Mode
+  let detectedProvider: IProvider | undefined;
+  try {
+    detectedProvider = providerRegistry.detectProvider(apiKey);
+    debug("HTTP", `[${requestId}] detectProvider 结果: ${detectedProvider ? detectedProvider.name : 'null'}`);
+  } catch (detectError) {
+    const msg = detectError instanceof Error ? detectError.message : String(detectError);
+    error("HTTP", `[${requestId}] detectProvider 抛出异常: ${msg}`);
+    detectedProvider = undefined;
+  }
+
+  let provider: IProvider | null = null;
+  let actualApiKey = apiKey;
+
+  if (detectedProvider) {
+    // Relay Mode
+    if (!modes.relay) {
+      error("HTTP", `[${requestId}] Relay mode 已禁用，但检测到 Provider Key`);
+      return new Response(JSON.stringify({ error: "Relay mode is disabled" }), {
+        status: 403,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    provider = detectedProvider;
+    info("HTTP", `[${requestId}] Relay Mode: 路由到 ${provider.name} (Images Edit)`);
+  } else {
+    // Backend Mode
+    debug("HTTP", `[${requestId}] 未检测到 Provider Key，尝试 Backend Mode`);
+    
+    if (!modes.backend) {
+      error("HTTP", `[${requestId}] Backend mode 已禁用，且未检测到有效的 Provider Key`);
+      return new Response(JSON.stringify({ error: "Invalid API Key" }), {
+        status: 401,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    if (systemConfig.globalAccessKey && apiKey !== systemConfig.globalAccessKey) {
+      error("HTTP", `[${requestId}] 全局密钥验证失败`);
+      return new Response(JSON.stringify({ error: "Unauthorized" }), {
+        status: 401,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    // 获取启用的 Provider（取第一个启用的）
+    const runtimeConfig = getRuntimeConfig();
+    const providersConfig = runtimeConfig.providers as Record<string, RuntimeProviderConfig> | undefined;
+    const enabledProviders = Object.entries(providersConfig || {})
+      .filter(([_name, cfg]) => (cfg as RuntimeProviderConfig).enabled === true)
+      .map(([name]) => name as ProviderName);
+
+    debug("HTTP", `[${requestId}] 启用的 Providers: ${enabledProviders.join(', ')}`);
+
+    if (enabledProviders.length === 0) {
+      error("HTTP", `[${requestId}] Backend mode: 没有启用的 Provider`);
+      return new Response(
+        JSON.stringify({ error: "No enabled providers for backend mode" }),
+        { status: 503, headers: { "Content-Type": "application/json" } },
+      );
+    }
+
+    const providerName = enabledProviders[0];
+    provider = providerRegistry.get(providerName) || null;
+
+    if (!provider) {
+      error("HTTP", `[${requestId}] Provider ${providerName} 未在注册表中找到`);
+      return new Response(
+        JSON.stringify({ error: `Provider ${providerName} not found` }),
+        { status: 500, headers: { "Content-Type": "application/json" } },
+      );
+    }
+
+    // 从 Key 池获取 Token
+    if (provider.name === "HuggingFace") {
+      actualApiKey = ""; // HF 内部处理
+      debug("HTTP", `[${requestId}] HuggingFace Provider: 使用内部 Token 管理`);
+    } else {
+      const token = keyManager.getNextKey(provider.name);
+      if (!token) {
+        error("HTTP", `[${requestId}] Key 池中没有可用的 ${provider.name} Token`);
+        return new Response(
+          JSON.stringify({ error: `No available keys for ${provider.name}` }),
+          { status: 503, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      actualApiKey = token;
+      debug("HTTP", `[${requestId}] 从 Key 池获取 Token: ${actualApiKey.substring(0, 10)}...`);
+    }
+
+    info("HTTP", `[${requestId}] 后端模式: 路由到 ${provider.name} (Images Edit), Key池状态: ${actualApiKey ? "有可用Key" : "使用内部Key"}`);
+  }
+
+  if (!provider) {
+    error("HTTP", `[${requestId}] 最终未能确定 Provider`);
+    return new Response(
+      JSON.stringify({ error: "No provider available" }),
+      { status: 500, headers: { "Content-Type": "application/json" } },
+    );
+  }
 
   const _startTime = Date.now();
 
@@ -314,7 +411,7 @@ export async function handleImagesEdits(req: Request): Promise<Response> {
       });
     }
 
-    const generationResult = await provider.generate(apiKey, generationRequest, {
+    const generationResult = await provider.generate(actualApiKey, generationRequest, {
       requestId,
       returnBase64: responseFormat === "b64_json",
     });
@@ -395,9 +492,13 @@ export async function handleImagesEdits(req: Request): Promise<Response> {
     });
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : "Internal Server Error";
+    const errorStack = err instanceof Error ? err.stack : undefined;
     const errorProvider = provider?.name || "Unknown";
 
-    error("Proxy", `请求处理错误 (${errorProvider}): ${errorMessage}`);
+    error("Proxy", `[${requestId}] 请求处理错误 (${errorProvider}): ${errorMessage}`);
+    if (errorStack) {
+      debug("Proxy", `[${requestId}] 错误堆栈: ${errorStack}`);
+    }
 
     return new Response(
       JSON.stringify({

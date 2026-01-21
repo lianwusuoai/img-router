@@ -146,7 +146,7 @@ async function showModelDropdown(container) {
           `;
     }
   } catch (e) {
-    console.error("Fetch models failed", e);
+    console.error("获取模型列表失败", e);
     dropdown.innerHTML = `
             <div style="padding: 8px; color: var(--error-color, #ef4444);">
                 <i class="ri-error-warning-line"></i> 网络错误
@@ -390,7 +390,7 @@ async function loadPromptOptimizerConfig() {
             </div>
         `;
   } catch (e) {
-    console.error("Failed to load PromptOptimizer settings:", e);
+    console.error("加载提示词优化器设置失败:", e);
     container.innerHTML = '<div style="padding:20px; text-align:center; color:red;">加载失败</div>';
   }
 }

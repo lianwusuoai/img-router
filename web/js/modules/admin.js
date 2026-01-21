@@ -165,7 +165,7 @@ async function loadDashboardData() {
 
     renderDashboardChannels(config);
   } catch (e) {
-    console.error("Failed to load dashboard data:", e);
+    console.error("加载仪表盘数据失败:", e);
   }
 }
 

@@ -3,10 +3,11 @@
  *
  * 处理 /v1/images/generations 端点（文生图）。
  *
- * V4 升级特性：
+ * V5 升级特性：
  * - **权重级联路由**：基于权重的 Provider 优先级调度与故障转移。
  * - **智能增强**：集成 Prompt 翻译与扩充。
  * - **Key 池管理**：直连模式下自动轮询 Key。
+ * - **Handler 层多图独立扩充**：每张图使用独立的扩充提示词。
  */
 
 import { getPromptOptimizerConfig, getProviderTaskDefaults, getSystemConfig } from "../config/manager.ts";
@@ -154,89 +155,7 @@ export async function handleImagesGenerations(req: Request): Promise<Response> {
         const shouldTranslate = optimizerConfig?.enableTranslate !== false;
         const shouldExpand = optimizerConfig?.enableExpand === true;
         
-        let processedPrompt = originalPrompt;
-        
-        // 根据不同场景处理提示词优化
-        if (shouldTranslate && shouldExpand) {
-          // 场景1: 同时开启翻译+扩充
-          if (imageCount > 1) {
-            // 多图：先为每张图翻译，然后对每个翻译结果扩充
-            const translatedPrompts: string[] = [];
-            
-            // 步骤1: 为每张图翻译（调用 n 次）
-            for (let i = 1; i <= imageCount; i++) {
-              const translated = await promptOptimizerService.processPrompt(originalPrompt, {
-                translate: true,
-                expand: false,
-                imageIndex: i,
-              });
-              translatedPrompts.push(translated);
-            }
-            
-            // 步骤2: 对每个翻译结果扩充（再调用 n 次）
-            for (let i = 1; i <= imageCount; i++) {
-              const expanded = await promptOptimizerService.processPrompt(translatedPrompts[i - 1], {
-                translate: false,
-                expand: true,
-                imageIndex: i,
-              });
-              // 使用最后一次的结果
-              if (i === imageCount) {
-                processedPrompt = expanded;
-              }
-            }
-          } else {
-            // 单图：先翻译，再扩充（调用 2 次）
-            const translated = await promptOptimizerService.processPrompt(originalPrompt, {
-              translate: true,
-              expand: false,
-            });
-            processedPrompt = await promptOptimizerService.processPrompt(translated, {
-              translate: false,
-              expand: true,
-            });
-          }
-        } else if (shouldTranslate || shouldExpand) {
-          // 场景2: 仅翻译 或 仅扩充
-          if (imageCount > 1) {
-            // 多图：为每张图调用一次（调用 n 次）
-            for (let i = 1; i <= imageCount; i++) {
-              const optimized = await promptOptimizerService.processPrompt(originalPrompt, {
-                translate: shouldTranslate,
-                expand: shouldExpand,
-                imageIndex: i,
-              });
-              // 使用最后一次的结果
-              if (i === imageCount) {
-                processedPrompt = optimized;
-              }
-            }
-          } else {
-            // 单图：调用一次
-            processedPrompt = await promptOptimizerService.processPrompt(originalPrompt, {
-              translate: shouldTranslate,
-              expand: shouldExpand,
-            });
-          }
-        }
-        // 场景3: 都未开启 → processedPrompt 保持为 originalPrompt
-
-        if (processedPrompt !== originalPrompt) {
-          debug("PromptOptimizer", `Prompt optimized: ${processedPrompt.substring(0, 50)}...`);
-          finalProcessedPrompt = processedPrompt;
-        }
-
-        // 3.2 准备请求对象
-        const generationRequest: ImageGenerationRequest = {
-          ...requestBody,
-          prompt: processedPrompt,
-          images: [],
-          model: targetModel === "auto" ? (defaults.model || undefined) : targetModel,
-          steps: requestBody.steps || defaults.steps || undefined,
-          n: imageCount,
-        };
-
-        // 3.3 获取 Key
+        // 3.3 获取 Key (提前到扩充前，避免重复获取)
         let currentApiKey = apiKey; // Relay Mode 默认使用用户传入的 Key
 
         if (usingBackendMode) {
@@ -256,17 +175,149 @@ export async function handleImagesGenerations(req: Request): Promise<Response> {
           }
         }
 
-        // 3.4 执行生成
-        const result = await provider.generate(currentApiKey, generationRequest, { requestId });
-
-        if (result.success) {
-          successResult = result;
-          // 成功，跳出循环
+        // ==========================================
+        // 🔄 方案一：Handler 层控制多图独立扩充
+        // ==========================================
+        if (imageCount > 1) {
+          // 多图生成：为每张图独立扩充并调用 Provider
+          info("Router", `多图生成模式: 将生成 ${imageCount} 张独立扩充的图片`);
+          
+          const singleImageResults: GenerationResult[] = [];
+          const errors: string[] = [];
+          
+          // 为每张图独立处理
+          for (let i = 1; i <= imageCount; i++) {
+            try {
+              // 独立扩充每张图的提示词
+              let processedPrompt = originalPrompt;
+              
+              if (shouldTranslate && shouldExpand) {
+                // 场景1: 同时开启翻译+扩充
+                const translated = await promptOptimizerService.processPrompt(originalPrompt, {
+                  translate: true,
+                  expand: false,
+                  imageIndex: i,
+                });
+                processedPrompt = await promptOptimizerService.processPrompt(translated, {
+                  translate: false,
+                  expand: true,
+                  imageIndex: i,
+                });
+              } else if (shouldTranslate || shouldExpand) {
+                // 场景2: 仅翻译 或 仅扩充
+                processedPrompt = await promptOptimizerService.processPrompt(originalPrompt, {
+                  translate: shouldTranslate,
+                  expand: shouldExpand,
+                  imageIndex: i,
+                });
+              }
+              
+              // 保存第一张图的处理后提示词（用于存储）
+              if (i === 1 && processedPrompt !== originalPrompt) {
+                finalProcessedPrompt = processedPrompt;
+              }
+              
+              // 为单张图准备请求对象
+              const singleRequest: ImageGenerationRequest = {
+                ...requestBody,
+                prompt: processedPrompt,
+                images: [],
+                model: targetModel === "auto" ? (defaults.model || undefined) : targetModel,
+                steps: requestBody.steps || defaults.steps || undefined,
+                n: 1, // ← 强制单图生成
+              };
+              
+              // 调用 Provider 生成单张图
+              info("Router", `生成图片 ${i}/${imageCount}`);
+              const singleResult = await provider.generate(currentApiKey, singleRequest, { requestId });
+              
+              if (singleResult.success) {
+                singleImageResults.push(singleResult);
+                info("Router", `图片 ${i}/${imageCount} 生成成功`);
+              } else {
+                errors.push(`图片 ${i}: ${singleResult.error || "Unknown error"}`);
+                error("Router", `图片 ${i}/${imageCount} 生成失败: ${singleResult.error}`);
+              }
+            } catch (e) {
+              const msg = e instanceof Error ? e.message : String(e);
+              errors.push(`图片 ${i}: ${msg}`);
+              error("Router", `图片 ${i}/${imageCount} 生成异常: ${msg}`);
+            }
+          }
+          
+          // 汇总结果
+          if (singleImageResults.length === 0) {
+            throw new Error(`所有图片生成失败。错误信息:\n${errors.join("\n")}`);
+          }
+          
+          info(
+            "Router",
+            `多图生成完成: 成功 ${singleImageResults.length}/${imageCount} 张${
+              errors.length > 0 ? `, 失败 ${errors.length} 张` : ""
+            }`,
+          );
+          
+          // 合并所有图片结果
+          const allImages = singleImageResults.flatMap((r) => r.images || []);
+          successResult = {
+            success: true,
+            images: allImages,
+            model: targetModel,
+            provider: provider.name,
+          };
+          
+          // 成功，跳出 Provider 循环
           break;
         } else {
-          lastError = new Error(result.error || "Unknown error");
-          error("Router", `Provider ${provider.name} failed: ${result.error}`);
-          // 继续下一个 Provider
+          // 单图生成：保持原有逻辑
+          let processedPrompt = originalPrompt;
+          
+          if (shouldTranslate && shouldExpand) {
+            // 场景1: 同时开启翻译+扩充
+            const translated = await promptOptimizerService.processPrompt(originalPrompt, {
+              translate: true,
+              expand: false,
+            });
+            processedPrompt = await promptOptimizerService.processPrompt(translated, {
+              translate: false,
+              expand: true,
+            });
+          } else if (shouldTranslate || shouldExpand) {
+            // 场景2: 仅翻译 或 仅扩充
+            processedPrompt = await promptOptimizerService.processPrompt(originalPrompt, {
+              translate: shouldTranslate,
+              expand: shouldExpand,
+            });
+          }
+          // 场景3: 都未开启 → processedPrompt 保持为 originalPrompt
+
+          if (processedPrompt !== originalPrompt) {
+            debug("PromptOptimizer", `Prompt optimized: ${processedPrompt.substring(0, 50)}...`);
+            finalProcessedPrompt = processedPrompt;
+          }
+
+          // 3.2 准备请求对象
+          const generationRequest: ImageGenerationRequest = {
+            ...requestBody,
+            prompt: processedPrompt,
+            images: [],
+            model: targetModel === "auto" ? (defaults.model || undefined) : targetModel,
+            steps: requestBody.steps || defaults.steps || undefined,
+            n: 1,
+          };
+
+          // 3.4 执行生成
+          const result = await provider.generate(currentApiKey, generationRequest, { requestId });
+
+          if (result.success) {
+            successResult = result;
+            // 成功，跳出循环
+            break;
+          } else {
+            lastError = new Error(result.error || "Unknown error");
+            error("Router", `Provider ${provider.name} failed: ${result.error}`);
+            // 继续下一个 Provider
+          }
         }
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
