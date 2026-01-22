@@ -28,9 +28,15 @@ export function initKeyManager() {
                     
                     <div style="background:var(--bg-main); padding:15px; border-radius:8px; margin-bottom:20px;">
                         <h4 style="margin-top:0; margin-bottom:10px; font-size:14px;">添加新 Key</h4>
-                        <div style="display:flex; gap:10px;">
-                            <input type="text" id="newKeyVal" placeholder="输入 API Key" class="form-control" style="flex:2;">
-                            <input type="text" id="newKeyName" placeholder="备注 (可选)" class="form-control" style="flex:1;">
+                        <div id="newKeyForm" style="display:flex; flex-direction:column; gap:10px;">
+                            <div style="display:flex; gap:10px;">
+                                <input type="text" id="newKeyVal" placeholder="输入 API Key" class="form-control" style="flex:2;">
+                                <input type="text" id="newKeyName" placeholder="备注 (可选)" class="form-control" style="flex:1;">
+                            </div>
+                            <div id="newApiFields" style="display:none; flex-direction:column; gap:10px;">
+                                <input type="text" id="newKeyBaseUrl" placeholder="API Base URL (例如: https://api.example.com)" class="form-control">
+                                <input type="text" id="newKeyModels" placeholder="模型列表 (逗号分隔，例如: gpt-4,gpt-3.5-turbo)" class="form-control">
+                            </div>
                             <button class="btn btn-primary" id="addKeyBtn">添加</button>
                         </div>
                     </div>
@@ -79,6 +85,17 @@ export async function openKeyManager(provider) {
     modal.style.display = "flex";
     document.getElementById("newKeyVal").value = "";
     document.getElementById("newKeyName").value = "";
+    
+    // 显示/隐藏 NewApi 特殊字段
+    const newApiFields = document.getElementById("newApiFields");
+    if (newApiFields) {
+      newApiFields.style.display = provider === "NewApi" ? "flex" : "none";
+      if (provider === "NewApi") {
+        document.getElementById("newKeyBaseUrl").value = "";
+        document.getElementById("newKeyModels").value = "";
+      }
+    }
+    
     await loadKeys();
   }
 }
@@ -125,11 +142,25 @@ function renderKeyTable(pool) {
       ? "..." + k.key.slice(-4)
       : (k.key || "********");
 
+    // NewApi 特殊信息显示
+    let extraInfo = "";
+    if (currentKeyProvider === "NewApi") {
+      const url = k.baseUrl ? escapeHtml(k.baseUrl) : "未设置";
+      const models = k.models && Array.isArray(k.models) && k.models.length > 0
+        ? escapeHtml(k.models.join(", "))
+        : "未设置";
+      extraInfo = `
+        <span style="font-size:12px; color:var(--text-secondary); display:block;">URL: ${url}</span>
+        <span style="font-size:12px; color:var(--text-secondary); display:block;">模型: ${models}</span>
+      `;
+    }
+
     tr.innerHTML = `
             <td style="padding:12px;">${escapeHtml(k.name)}</td>
             <td style="padding:12px; font-family:monospace;">${keyDisplay}</td>
             <td style="padding:12px;">
                 <span style="font-size:12px; color:var(--text-secondary); display:block;">最后使用: ${lastUsed}</span>
+                ${extraInfo}
             </td>
             <td style="padding:12px;">
                 <button class="btn delete-key-btn" style="padding:4px 8px; background:#dc3545; color:white;" data-id="${k.id}">删除</button>
@@ -159,6 +190,25 @@ async function addKey() {
     return;
   }
 
+  const keyItem = { key, name: name || "Key" };
+
+  // NewApi 特殊字段处理
+  if (currentKeyProvider === "NewApi") {
+    const baseUrlInput = document.getElementById("newKeyBaseUrl");
+    const modelsInput = document.getElementById("newKeyModels");
+    
+    const baseUrl = baseUrlInput?.value.trim();
+    const modelsStr = modelsInput?.value.trim();
+    
+    if (!baseUrl) {
+      alert("请输入 API Base URL");
+      return;
+    }
+    
+    keyItem.baseUrl = baseUrl;
+    keyItem.models = modelsStr ? modelsStr.split(",").map(m => m.trim()).filter(m => m) : [];
+  }
+
   try {
     const res = await apiFetch("/api/key-pool", {
       method: "POST",
@@ -166,7 +216,7 @@ async function addKey() {
       body: JSON.stringify({
         action: "add",
         provider: currentKeyProvider,
-        keyItem: { key, name: name || "Key" },
+        keyItem,
       }),
     });
 
@@ -177,6 +227,10 @@ async function addKey() {
 
     keyInput.value = "";
     nameInput.value = "";
+    if (currentKeyProvider === "NewApi") {
+      document.getElementById("newKeyBaseUrl").value = "";
+      document.getElementById("newKeyModels").value = "";
+    }
     await loadKeys();
   } catch (e) {
     alert(e.message);

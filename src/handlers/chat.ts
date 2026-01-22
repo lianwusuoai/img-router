@@ -23,10 +23,11 @@ import type {
   TextContentItem,
 } from "../types/index.ts";
 import { providerRegistry } from "../providers/registry.ts";
-import { getNextAvailableKey, getSystemConfig } from "../config/manager.ts";
+import { getNextAvailableKey, getPromptOptimizerConfig, getRuntimeConfig, getSystemConfig } from "../config/manager.ts";
 import type { IProvider } from "../providers/base.ts";
 import { buildDataUri, normalizeAndCompressInputImages } from "../utils/image.ts";
 import { debug, error, generateRequestId, info, logRequestEnd } from "../core/logger.ts";
+import { promptOptimizerService } from "../core/prompt-optimizer.ts";
 
 /**
  * 标准化消息内容格式
@@ -303,9 +304,38 @@ export async function handleChatCompletions(req: Request): Promise<Response> {
       `提取 Prompt: ${prompt?.substring(0, 80)}... (完整长度: ${prompt?.length || 0})`,
     );
 
+    // 🔄 Prompt 优化（翻译+扩充）
+    const optimizerConfig = getPromptOptimizerConfig();
+    const shouldTranslate = optimizerConfig?.enableTranslate !== false;
+    const shouldExpand = optimizerConfig?.enableExpand === true;
+    
+    let processedPrompt = prompt;
+    
+    if (shouldTranslate && shouldExpand) {
+      // 场景1: 同时开启翻译+扩充
+      const translated = await promptOptimizerService.processPrompt(prompt, {
+        translate: true,
+        expand: false,
+      });
+      processedPrompt = await promptOptimizerService.processPrompt(translated, {
+        translate: false,
+        expand: true,
+      });
+    } else if (shouldTranslate || shouldExpand) {
+      // 场景2: 仅翻译 或 仅扩充
+      processedPrompt = await promptOptimizerService.processPrompt(prompt, {
+        translate: shouldTranslate,
+        expand: shouldExpand,
+      });
+    }
+    
+    if (processedPrompt !== prompt) {
+      info("PromptOptimizer", `Chat 端点: Prompt 已优化`);
+    }
+
     // 使用 Provider 生成图片
     const generationRequest: ImageGenerationRequest = {
-      prompt,
+      prompt: processedPrompt,
       images: compressedImages,
       model: requestBody.model,
       size: requestBody.size,
@@ -322,7 +352,11 @@ export async function handleChatCompletions(req: Request): Promise<Response> {
       });
     }
 
-    const generationResult = await provider.generate(apiKey, generationRequest, { requestId });
+    // 获取完整的 Key 池配置以支持 Key 池路由（用于 NewApi 等支持多模型的 Provider）
+    const allKeyPools = getRuntimeConfig().keyPools || {};
+    // 只传递 NewApi Provider 的 Key 池（其他 Provider 的 Key 没有 models 字段）
+    const newApiKeyPool = allKeyPools["NewApi"] || [];
+    const generationResult = await provider.generate(apiKey, generationRequest, { requestId }, newApiKeyPool);
 
     if (!generationResult.success) {
       throw new Error(generationResult.error || "图片生成失败");

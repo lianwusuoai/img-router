@@ -9,6 +9,8 @@ import type { GenerationResult, ImageGenerationRequest } from "../types/index.ts
 import type { ImagesBlendRequest } from "../types/request.ts";
 import { getProviderTaskDefaults } from "../config/manager.ts";
 import { info } from "../core/logger.ts";
+import { promptOptimizerService } from "../core/prompt-optimizer.ts";
+import { getPromptOptimizerConfig } from "../config/manager.ts";
 
 /**
  * 支持的 Provider 名称枚举
@@ -19,6 +21,7 @@ export type ProviderName =
   | "ModelScope" // ModelScope
   | "HuggingFace" // Hugging Face
   | "Pollinations" // Pollinations AI
+  | "NewApi" // NewApi (OpenAI 兼容网关)
   | "Unknown"; // 未知
 
 /**
@@ -131,6 +134,7 @@ export interface IProvider {
     apiKey: string,
     request: ImageGenerationRequest,
     options: GenerationOptions,
+    keyPool?: import("../config/manager.ts").KeyPoolItem[],
   ): Promise<GenerationResult>;
 
   /**
@@ -189,6 +193,7 @@ export abstract class BaseProvider implements IProvider {
     apiKey: string,
     request: ImageGenerationRequest,
     options: GenerationOptions,
+    keyPool?: import("../config/manager.ts").KeyPoolItem[],
   ): Promise<GenerationResult>;
 
   /**
@@ -405,14 +410,31 @@ export abstract class BaseProvider implements IProvider {
     _apiKey: string,
     request: ImageGenerationRequest,
     _options: GenerationOptions,
-    executor: (req: ImageGenerationRequest) => Promise<GenerationResult>,
+    executor: (req: ImageGenerationRequest, imageIndex?: number) => Promise<GenerationResult>,
   ): Promise<GenerationResult> {
     const requestedN = request.n || 1;
     const maxNative = this.capabilities.maxNativeOutputImages || 1;
 
+    // 准备 Prompt 优化配置
+    const optimizerConfig = getPromptOptimizerConfig();
+    const shouldTranslate = optimizerConfig?.enableTranslate !== false;
+    const shouldExpand = optimizerConfig?.enableExpand === true;
+
+    // 辅助函数：执行 Prompt 优化
+    const optimizePrompt = async (req: ImageGenerationRequest, idx: number) => {
+      const newPrompt = await promptOptimizerService.processPrompt(req.prompt, {
+        translate: shouldTranslate,
+        expand: shouldExpand,
+        imageIndex: idx,
+        n: requestedN
+      });
+      return { ...req, prompt: newPrompt };
+    };
+
     // 如果请求数量在原生支持范围内，直接执行
     if (requestedN <= maxNative) {
-      return executor(request);
+      const optimizedRequest = await optimizePrompt(request, 0);
+      return executor(optimizedRequest);
     }
 
     info(
@@ -433,10 +455,14 @@ export abstract class BaseProvider implements IProvider {
       // 增加并发延迟以避免触发服务端的速率限制或连接错误（如 tls handshake eof）
       // Pollinations 等免费渠道对并发非常敏感，建议至少 1.5s - 2s
       const taskDelay = batchIndex * 1500;
+      
+      const currentBatchIndex = batchIndex;
 
       const taskPromise = (async () => {
         if (taskDelay > 0) await new Promise((r) => setTimeout(r, taskDelay));
-        return executor(subRequest);
+        
+        const optimizedSubRequest = await optimizePrompt(subRequest, currentBatchIndex);
+        return executor(optimizedSubRequest, currentBatchIndex + 1);
       })();
 
       tasks.push(taskPromise);

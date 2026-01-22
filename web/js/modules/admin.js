@@ -202,7 +202,11 @@ function renderDashboardChannels(config) {
         detectApiKey(config.globalAccessKey, "ModelScope");
     } else if (p.name === "HuggingFace") {
       isConfigured = config.hfConfigured || detectApiKey(config.globalAccessKey, "HuggingFace");
-    } else if (p.name === "Pollinations") isConfigured = true;
+    } else if (p.name === "Pollinations") {
+      isConfigured = true;
+    } else if (p.name === "NewApi") {
+      isConfigured = config.newapiConfigured || detectApiKey(config.globalAccessKey, "NewApi");
+    }
 
     // 状态判定逻辑
     let statusIcon = "ri-question-line";

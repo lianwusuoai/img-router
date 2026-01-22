@@ -16,8 +16,11 @@ import {
   type ProviderName,
 } from "./base.ts";
 import type { GenerationResult, ImageGenerationRequest } from "../types/index.ts";
-import { getHfModelMap, getRuntimeConfig, HuggingFaceConfig } from "../config/manager.ts";
-import { info } from "../core/logger.ts";
+import { getHfModelMap, getPromptOptimizerConfig, getRuntimeConfig, HuggingFaceConfig } from "../config/manager.ts";
+import {
+  info,
+} from "../core/logger.ts";
+import { promptOptimizerService } from "../core/prompt-optimizer.ts";
 import { keyManager } from "../core/key-manager.ts";
 import { Client } from "@gradio/client";
 
@@ -72,16 +75,30 @@ export class HuggingFaceProvider extends BaseProvider {
     }
 
     // 单张图生成逻辑
-    return this.generateSingle(request, _options);
+    return this.generateSingle(request, _options, 0, 1);
   }
 
   /**
    * 单张图生成方法 (使用 Gradio Client)
    */
-  private generateSingle(
+  private async generateSingle(
     request: ImageGenerationRequest,
     _options?: GenerationOptions,
+    imageIndex: number = 0,
+    totalN: number = 1,
   ): Promise<GenerationResult> {
+    // Prompt 优化
+    const optimizerConfig = getPromptOptimizerConfig();
+    const shouldTranslate = optimizerConfig?.enableTranslate !== false;
+    const shouldExpand = optimizerConfig?.enableExpand === true;
+
+    request.prompt = await promptOptimizerService.processPrompt(request.prompt, {
+      translate: shouldTranslate,
+      expand: shouldExpand,
+      imageIndex: imageIndex,
+      n: totalN
+    });
+
     const { model, prompt, size } = request;
     // 使用配置中的默认尺寸作为兜底
     const defaultWidth = this.config.defaultSize
@@ -230,7 +247,7 @@ export class HuggingFaceProvider extends BaseProvider {
       // 创建当前批次的请求
       const batchPromises = Array.from({ length: batchSize }, (_, index) => {
         const imageIndex = i + index + 1;
-        return this.generateSingle({ ...request, n: 1 }, options)
+        return this.generateSingle({ ...request, n: 1 }, options, imageIndex - 1, n)
           .then((result) => {
             info("HuggingFace", `图片 ${imageIndex}/${n} 生成成功`);
             return result;

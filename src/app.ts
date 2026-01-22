@@ -1279,6 +1279,24 @@ async function routeRequest(req: Request, ctx: RequestContext): Promise<Response
           ? runtimeSystem.healthCheck
           : Config.ENABLE_HEALTH_CHECK;
 
+        // 为 NewApi 获取动态模型列表
+        const newapiProvider = providerRegistry.get("NewApi", true);
+        let newapiModels: string[] = [];
+        if (newapiProvider && newapiProvider.name === "NewApi") {
+          const newapiKeyPool = getKeyPool("NewApi");
+          debug("App", `[/api/config] NewApi Key Pool 数量: ${newapiKeyPool.length}`);
+          // 使用 NewApiProvider 的 getMergedModels 方法
+          try {
+            // 动态导入 NewApiProvider 以访问 getMergedModels
+            const { newApiProvider } = await import("./providers/newapi.ts");
+            newapiModels = await newApiProvider.getMergedModels(newapiKeyPool);
+            info("App", `[/api/config] NewApi 合并后的模型列表 (${newapiModels.length}): ${newapiModels.join(", ")}`);
+          } catch (e) {
+            error("App", `获取 NewApi 动态模型列表失败: ${e}`);
+            newapiModels = newapiProvider.config.textModels || [];
+          }
+        }
+
         const providers = providerRegistry.getNames().flatMap((name) => {
           const p = providerRegistry.get(name, true);
           if (!p) return [];
@@ -1298,17 +1316,22 @@ async function routeRequest(req: Request, ctx: RequestContext): Promise<Response
             );
           }
 
+          // 为 NewApi 使用动态模型列表
+          const textModels = name === "NewApi" ? newapiModels : p.config.textModels;
+          const editModels = name === "NewApi" ? newapiModels : (p.config.editModels || []);
+          const blendModels = name === "NewApi" ? newapiModels : (p.config.blendModels || []);
+
           return [{
             name: p.name,
             enabled: isEnabled,
             capabilities: p.capabilities,
-            textModels: p.config.textModels,
-            editModels: p.config.editModels || [],
+            textModels,
+            editModels,
             defaultModel: p.config.defaultModel,
             defaultEditModel: p.config.defaultEditModel || p.config.defaultModel,
             defaultSize: p.config.defaultSize,
             defaultEditSize: p.config.defaultEditSize || p.config.defaultSize,
-            blendModels: p.config.blendModels || [],
+            blendModels,
             defaultBlendModel: p.config.defaultBlendModel || p.config.defaultModel,
             defaultBlendSize: p.config.defaultBlendSize || p.config.defaultSize,
             supportsQuality: p.name === "Pollinations",
@@ -1338,6 +1361,7 @@ async function routeRequest(req: Request, ctx: RequestContext): Promise<Response
               getKeyPool("HuggingFace").some((k) => k.enabled),
             pollinationsConfigured: !!Config.POLLINATIONS_API_KEY ||
               getKeyPool("Pollinations").some((k) => k.enabled),
+            newapiConfigured: getKeyPool("NewApi").some((k) => k.enabled),
             globalAccessKeyConfigured: !!Config.GLOBAL_ACCESS_KEY,
             cors: resolvedCors,
             logging: resolvedLogging,
@@ -1366,8 +1390,22 @@ async function routeRequest(req: Request, ctx: RequestContext): Promise<Response
           if (!providerRegistry.has(name)) continue;
           const provider = providerRegistry.get(name);
           if (provider) {
-            const models = provider.getSupportedModels();
-            models.forEach((m) => allModels.add(m));
+            // 为 NewApi 使用动态模型列表
+            if (name === "NewApi") {
+              try {
+                const { newApiProvider } = await import("./providers/newapi.ts");
+                const newapiKeyPool = getKeyPool("NewApi");
+                const newapiModels = await newApiProvider.getMergedModels(newapiKeyPool);
+                newapiModels.forEach((m) => allModels.add(m));
+              } catch (e) {
+                error("App", `获取 NewApi 动态模型列表失败: ${e}`);
+                const models = provider.getSupportedModels();
+                models.forEach((m) => allModels.add(m));
+              }
+            } else {
+              const models = provider.getSupportedModels();
+              models.forEach((m) => allModels.add(m));
+            }
           }
         }
 
@@ -1398,13 +1436,32 @@ async function routeRequest(req: Request, ctx: RequestContext): Promise<Response
       debug("KeyPool", `Received ${method} request to /api/key-pool`);
       if (method === "GET") {
         const provider = ctx.url.searchParams.get("provider");
+        const id = ctx.url.searchParams.get("id");
+        
         if (!provider) {
           return new Response(JSON.stringify({ error: "Missing provider param" }), {
             status: 400,
             headers: { "Content-Type": "application/json" },
           });
         }
+        
         const pool = getKeyPool(provider);
+        
+        // 如果提供了 id 参数，返回单个 Key 的完整信息（不脱敏）
+        if (id) {
+          const keyItem = pool.find(k => k.id === id);
+          if (!keyItem) {
+            return new Response(JSON.stringify({ error: "Key not found" }), {
+              status: 404,
+              headers: { "Content-Type": "application/json" },
+            });
+          }
+          // 返回完整的 Key 信息（不脱敏）
+          return new Response(JSON.stringify({ keyItem }), {
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        
         // Debug: Log pool data to diagnose the issue
         debug("KeyPool", `Key pool for provider "${provider}": ${JSON.stringify(pool, null, 2)}`);
         debug("KeyPool", `Pool length: ${pool.length}`);
@@ -1938,9 +1995,6 @@ async function routeRequest(req: Request, ctx: RequestContext): Promise<Response
         try {
           const body = await req.json();
 
-          // Debug logs to verify inputs
-          debug("API", `fetch-models request: baseUrl=${body.baseUrl}, apiKey=${body.apiKey ? "present" : "empty"}`);
-
           if (!isRecord(body) || typeof body.baseUrl !== "string") {
             return new Response(JSON.stringify({ error: "Missing or invalid baseUrl" }), {
               status: 400,
@@ -1952,9 +2006,17 @@ async function routeRequest(req: Request, ctx: RequestContext): Promise<Response
             throw new Error("promptOptimizerService is not initialized");
           }
 
+          // 从 NewApi Key 池中查找匹配 baseUrl 的完整 key
+          const pool = getKeyPool("NewApi");
+          const matchedKey = pool.find(k => k.enabled && k.baseUrl === body.baseUrl);
+          
+          if (!matchedKey || !matchedKey.key) {
+            throw new Error(`未找到匹配 baseUrl "${body.baseUrl}" 的有效 Key`);
+          }
+
           const models = await promptOptimizerService.fetchModels({
             baseUrl: body.baseUrl,
-            apiKey: typeof body.apiKey === "string" ? body.apiKey : "",
+            apiKey: matchedKey.key,
           });
 
           return new Response(JSON.stringify({ ok: true, models }), {
@@ -1962,6 +2024,49 @@ async function routeRequest(req: Request, ctx: RequestContext): Promise<Response
           });
         } catch (e) {
           error("API", `Fetch models failed: ${e}`);
+          return new Response(
+            JSON.stringify({ ok: false, error: e instanceof Error ? e.message : String(e) }),
+            {
+              status: 500,
+              headers: { "Content-Type": "application/json" },
+            },
+          );
+        }
+      }
+      return handleMethodNotAllowed(method);
+
+    // 工具 API: 测试 NewApi Key 连接
+    case "/api/tools/test-newapi-key":
+      if (method === "POST") {
+        try {
+          const body = await req.json();
+
+          if (!isRecord(body) || typeof body.baseUrl !== "string" || typeof body.apiKey !== "string") {
+            return new Response(JSON.stringify({ error: "Missing or invalid baseUrl/apiKey" }), {
+              status: 400,
+              headers: { "Content-Type": "application/json" },
+            });
+          }
+
+          // 使用 NewApiProvider 的 fetchModels 方法测试连接
+          const { newApiProvider } = await import("./providers/newapi.ts");
+          const models = await newApiProvider.fetchModels(body.baseUrl, body.apiKey);
+
+          if (models.length === 0) {
+            return new Response(
+              JSON.stringify({ ok: false, error: "连接成功但未找到任何模型" }),
+              {
+                status: 200,
+                headers: { "Content-Type": "application/json" },
+              },
+            );
+          }
+
+          return new Response(JSON.stringify({ ok: true, models }), {
+            headers: { "Content-Type": "application/json" },
+          });
+        } catch (e) {
+          error("API", `Test NewApi key failed: ${e}`);
           return new Response(
             JSON.stringify({ ok: false, error: e instanceof Error ? e.message : String(e) }),
             {

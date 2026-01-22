@@ -223,7 +223,14 @@ function formatLogMessage(
   const lines = message.split('\n');
   
   if (level === LogLevel.INFO) {
-    // INFO：单行显示（将换行符替换为空格）
+    // PromptOptimizer 模块特殊处理：保留换行符
+    if (module === "PromptOptimizer") {
+      const result = [`[${timestamp}] [${levelName}] [${module}] `];
+      result.push(message);
+      return result.join('');
+    }
+    
+    // 其他 INFO：单行显示（将换行符替换为空格）
     const singleLine = message.replace(/\n+/g, ' ').trim();
     return `[${timestamp}] [${levelName}] [${module}] ${singleLine}`;
   } else {

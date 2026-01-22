@@ -35,7 +35,7 @@ export class PromptOptimizerService {
    */
   public async processPrompt(
     prompt: string,
-    options: { translate?: boolean; expand?: boolean; imageIndex?: number },
+    options: { translate?: boolean; expand?: boolean; imageIndex?: number; n?: number },
   ): Promise<string> {
     if (!prompt) return "";
 
@@ -43,6 +43,7 @@ export class PromptOptimizerService {
     const shouldTranslate = options.translate === true;
     const shouldExpand = options.expand === true;
     const imageIndex = options.imageIndex;
+    const totalN = options.n || 1;
 
     let result = prompt;
     let translatedText = "";
@@ -61,7 +62,8 @@ export class PromptOptimizerService {
         }
       } else {
         if (!shouldExpand) {
-          info("PromptOptimizer", "⏭️ 检测到英文提示词，跳过翻译");
+          // 如果不需要扩充，且跳过了翻译，这里不需要单独记录"跳过翻译"的日志，
+          // 因为最终会输出 "✅原始:..."
         }
       }
     }
@@ -73,27 +75,36 @@ export class PromptOptimizerService {
       expanded = result !== beforeExpand;
     }
 
-    // 3. 输出日志 - 合并翻译和扩充的结果
-    // 将提示词中的换行符替换为空格，使其显示为一行
+    // 3. 输出日志
+    // 格式化函数：将提示词中的换行符替换为空格，使其显示为一行
     const formatPrompt = (text: string) => text.replace(/\s+/g, ' ').trim();
     
+    // 确定前缀
+    let prefix = "";
+    if (totalN >= 2 && imageIndex !== undefined) {
+      // 多图并发模式：显示 "图片X" 并换行
+      prefix = `图片${imageIndex + 1}\n`;
+    } else {
+      // 单图模式 (或原生多图一次性处理)：前面加换行符，使"✅原始"显示在下一行
+      prefix = `\n`;
+    }
+
     if (translated && expanded) {
       // 同时开启翻译+扩充
-      const prefix = imageIndex !== undefined ? `图${imageIndex} ` : "";
       info("PromptOptimizer",
-        `✅ ${prefix}翻译+扩充提示词\n` +
-        `原始: "${formatPrompt(prompt)}"\n` +
-        `翻译后: "${formatPrompt(translatedText)}"\n` +
-        `扩充后: "${formatPrompt(result)}"`
+        `${prefix}✅原始:${formatPrompt(prompt)}\n` +
+        `✅翻译:${formatPrompt(translatedText)}\n` +
+        `✅扩充:${formatPrompt(result)}`
       );
     } else if (translated) {
       // 仅翻译
-      info("PromptOptimizer", `✅ 翻译:\n原始: "${formatPrompt(prompt)}"\n翻译后: "${formatPrompt(result)}"`);
+      info("PromptOptimizer", `${prefix}✅原始:${formatPrompt(prompt)}\n✅翻译:${formatPrompt(result)}`);
     } else if (expanded) {
       // 仅扩充
-      info("PromptOptimizer", `✅ 扩充:\n原始: "${formatPrompt(prompt)}"\n扩充后: "${formatPrompt(result)}"`);
-    } else if (shouldTranslate || shouldExpand) {
-      info("PromptOptimizer", "⏭️ 提示词未发生变化");
+      info("PromptOptimizer", `${prefix}✅原始:${formatPrompt(prompt)}\n✅扩充:${formatPrompt(result)}`);
+    } else {
+      // 既无翻译也无扩充 (或跳过翻译且未开启扩充)
+      info("PromptOptimizer", `${prefix}✅原始:${formatPrompt(prompt)}`);
     }
 
     return result;

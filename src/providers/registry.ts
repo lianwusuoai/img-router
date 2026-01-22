@@ -14,6 +14,7 @@ import { giteeProvider } from "./gitee.ts";
 import { modelScopeProvider } from "./modelscope.ts";
 import { huggingFaceProvider } from "./huggingface.ts";
 import { pollinationsProvider } from "./pollinations.ts";
+import { newApiProvider } from "./newapi.ts";
 import { debug, info, logProviderRouting } from "../core/logger.ts";
 
 /** 模块名称，用于日志前缀 */
@@ -54,6 +55,7 @@ class ProviderRegistry {
       modelScopeProvider,
       huggingFaceProvider,
       pollinationsProvider,
+      newApiProvider,
     ];
 
     for (const provider of builtinProviders) {
@@ -76,6 +78,7 @@ class ProviderRegistry {
       modelScopeProvider,
       huggingFaceProvider,
       pollinationsProvider,
+      newApiProvider,
     ];
 
     const enabledList: string[] = [];

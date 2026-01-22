@@ -11,7 +11,7 @@ docker-compose.override.yml
 # 临时目录（按项目约定）
 debug/
 test/
-
+tests/
 # IDE
 .vscode/
 .idea/

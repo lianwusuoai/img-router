@@ -80,10 +80,70 @@ export async function renderKeys(container) {
                         <textarea id="newKeyVal" class="form-control" rows="3" placeholder="sk-..." style="font-family: monospace;"></textarea>
                         <div style="font-size: 12px; color: var(--text-secondary); margin-top: 4px;">支持批量添加，每行一个 Key</div>
                     </div>
+                    <!-- NewApi 特殊字段 -->
+                    <div id="newApiFields" style="display: none;">
+                        <div class="form-group">
+                            <label class="form-label">API Base URL <span style="color: var(--error);">*</span></label>
+                            <input type="text" id="newKeyBaseUrl" class="form-control" placeholder="例如：https://api.example.com/v1">
+                            <div style="font-size: 12px; color: var(--text-secondary); margin-top: 4px;">NewApi 分发的 API 端点地址</div>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">支持的模型 (可选)</label>
+                            <input type="text" id="newKeyModels" class="form-control" placeholder="例如：gpt-4,gpt-3.5-turbo,dall-e-3">
+                            <div style="font-size: 12px; color: var(--text-secondary); margin-top: 4px;">逗号分隔的模型列表，留空表示支持所有模型</div>
+                        </div>
+                        <div style="margin-top: 16px;">
+                            <button type="button" class="btn" style="background: var(--success); color: white;" onclick="globalThis.testNewApiConnection()">
+                                <i class="ri-flask-line"></i> 测试连接
+                            </button>
+                        </div>
+                    </div>
                 </div>
                 <div class="modal-footer">
                     <button class="btn" style="background: var(--background); color: var(--text-primary);" onclick="globalThis.closeAddKeyModal()">取消</button>
                     <button class="btn btn-primary" onclick="globalThis.confirmAddKey()">确定添加</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 编辑 Key 弹窗 -->
+        <div id="editKeyModal" class="modal">
+            <div class="modal-content" style="width: 500px;">
+                <div class="modal-header">
+                    <h3 class="modal-title">编辑 Key</h3>
+                    <button class="modal-close" onclick="globalThis.closeEditKeyModal()">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <input type="hidden" id="editKeyId">
+                    <div class="form-group">
+                        <label class="form-label">Key 名称</label>
+                        <input type="text" id="editKeyName" class="form-control" placeholder="例如：我的测试 Key">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">API Key</label>
+                        <input type="text" id="editKeyVal" class="form-control" placeholder="sk-..." style="font-family: monospace;">
+                    </div>
+                    <!-- NewApi 特殊字段 -->
+                    <div id="editNewApiFields" style="display: none;">
+                        <div class="form-group">
+                            <label class="form-label">API Base URL <span style="color: var(--error);">*</span></label>
+                            <input type="text" id="editKeyBaseUrl" class="form-control" placeholder="例如：https://api.example.com/v1">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">支持的模型 (可选)</label>
+                            <input type="text" id="editKeyModels" class="form-control" placeholder="例如：gpt-4,gpt-3.5-turbo,dall-e-3">
+                            <div style="font-size: 12px; color: var(--text-secondary); margin-top: 4px;">逗号分隔的模型列表，留空表示支持所有模型</div>
+                        </div>
+                        <div style="margin-top: 16px;">
+                            <button type="button" class="btn" style="background: var(--success); color: white;" onclick="globalThis.testEditNewApiConnection()">
+                                <i class="ri-flask-line"></i> 测试连接
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn" style="background: var(--background); color: var(--text-primary);" onclick="globalThis.closeEditKeyModal()">取消</button>
+                    <button class="btn btn-primary" onclick="globalThis.confirmEditKey()">保存修改</button>
                 </div>
             </div>
         </div>
@@ -93,9 +153,15 @@ export async function renderKeys(container) {
   globalThis.showAddKeyModal = showAddKeyModal;
   globalThis.closeAddKeyModal = closeAddKeyModal;
   globalThis.confirmAddKey = confirmAddKey;
+  globalThis.showEditKeyModal = showEditKeyModal;
+  globalThis.closeEditKeyModal = closeEditKeyModal;
+  globalThis.confirmEditKey = confirmEditKey;
   globalThis.deleteKey = deleteKey;
   globalThis.toggleKeyStatus = toggleKeyStatus;
   globalThis.switchProvider = switchProvider;
+  globalThis.testNewApiKey = testNewApiKey;
+  globalThis.testNewApiConnection = testNewApiConnection;
+  globalThis.testEditNewApiConnection = testEditNewApiConnection;
 
   await loadProviders();
   await loadKeys(currentProvider);
@@ -225,6 +291,19 @@ async function loadKeys(provider) {
         ? Math.round((k.successCount / k.totalCalls) * 100) + "%"
         : "-";
 
+      // NewApi 特殊信息
+      let extraInfo = "";
+      if (provider === "NewApi") {
+        const url = k.baseUrl ? escapeHtml(k.baseUrl) : "未设置";
+        const models = k.models && Array.isArray(k.models) && k.models.length > 0
+          ? escapeHtml(k.models.join(", "))
+          : "所有模型";
+        extraInfo = `
+          <div style="font-size: 12px; color: var(--text-secondary); margin-top: 4px;">URL: ${url}</div>
+          <div style="font-size: 12px; color: var(--text-secondary);">模型: ${models}</div>
+        `;
+      }
+
       tr.innerHTML = `
                 <td style="padding: 16px 24px;">
                     <div style="font-weight: 500; color: var(--text-primary);">${
@@ -233,6 +312,7 @@ async function loadKeys(provider) {
                     <div style="font-size: 12px; color: var(--text-secondary);">ID: ${
         k.id && typeof k.id === "string" ? k.id.slice(0, 8) : "未知"
       }</div>
+                    ${extraInfo}
                 </td>
                 <td style="padding: 16px 24px;">
                     <code style="background: rgba(0,0,0,0.05); padding: 2px 6px; border-radius: 4px; font-size: 12px;">${
@@ -258,6 +338,14 @@ async function loadKeys(provider) {
                     <div style="font-size: 12px; color: var(--text-secondary);">上次: ${lastUsed}</div>
                 </td>
                 <td style="padding: 16px 24px; text-align: right;">
+                    ${provider === "NewApi" ? `
+                    <button class="btn icon-btn" onclick="globalThis.testNewApiKey('${escapeHtml(k.id)}')" title="测试" style="color: var(--success); margin-right: 8px;">
+                        <i class="ri-flask-line"></i>
+                    </button>
+                    ` : ''}
+                    <button class="btn icon-btn" onclick="globalThis.showEditKeyModal('${escapeHtml(k.id)}')" title="编辑" style="color: var(--primary); margin-right: 8px;">
+                        <i class="ri-edit-line"></i>
+                    </button>
                     <button class="btn icon-btn" onclick="globalThis.deleteKey('${escapeHtml(k.id)}')" title="删除" style="color: var(--error);">
                         <i class="ri-delete-bin-line"></i>
                     </button>
@@ -334,13 +422,23 @@ async function deleteKey(id) {
 }
 
 // ==========================================
-// 弹窗相关函数
+// 添加 Key 弹窗相关函数
 // ==========================================
 
 function showAddKeyModal() {
   document.getElementById("addKeyModal").classList.add("active");
   document.getElementById("newKeyName").value = "";
   document.getElementById("newKeyVal").value = "";
+  
+  // 显示/隐藏 NewApi 特殊字段
+  const newApiFields = document.getElementById("newApiFields");
+  if (newApiFields) {
+    newApiFields.style.display = currentProvider === "NewApi" ? "block" : "none";
+    if (currentProvider === "NewApi") {
+      document.getElementById("newKeyBaseUrl").value = "";
+      document.getElementById("newKeyModels").value = "";
+    }
+  }
 }
 
 function closeAddKeyModal() {
@@ -356,35 +454,60 @@ async function confirmAddKey() {
     return;
   }
 
-  const lines = rawKeys.split("\n").map((l) => l.trim()).filter(Boolean);
-
-  // 验证 Key 格式
-  const invalidKeys = [];
-  for (const k of lines) {
-    if (!detectApiKey(k, currentProvider)) {
-      invalidKeys.push(k);
+  // NewApi 特殊字段验证
+  let baseUrl = "";
+  let models = [];
+  if (currentProvider === "NewApi") {
+    baseUrl = document.getElementById("newKeyBaseUrl")?.value.trim() || "";
+    const modelsStr = document.getElementById("newKeyModels")?.value.trim() || "";
+    
+    if (!baseUrl) {
+      alert("请输入 API Base URL");
+      return;
     }
+    
+    models = modelsStr ? modelsStr.split(",").map(m => m.trim()).filter(m => m) : [];
   }
 
-  if (invalidKeys.length > 0) {
-    alert(
-      `检测到 ${invalidKeys.length} 个 Key 不符合 ${currentProvider} 的格式要求：\n${
-        invalidKeys.slice(0, 3).join("\n")
-      }${invalidKeys.length > 3 ? "\n..." : ""}\n请检查是否选择了正确的渠道。`,
-    );
-    return;
+  const lines = rawKeys.split("\n").map((l) => l.trim()).filter(Boolean);
+
+  // 验证 Key 格式（NewApi 跳过格式验证）
+  if (currentProvider !== "NewApi") {
+    const invalidKeys = [];
+    for (const k of lines) {
+      if (!detectApiKey(k, currentProvider)) {
+        invalidKeys.push(k);
+      }
+    }
+
+    if (invalidKeys.length > 0) {
+      alert(
+        `检测到 ${invalidKeys.length} 个 Key 不符合 ${currentProvider} 的格式要求：\n${
+          invalidKeys.slice(0, 3).join("\n")
+        }${invalidKeys.length > 3 ? "\n..." : ""}\n请检查是否选择了正确的渠道。`,
+      );
+      return;
+    }
   }
 
   try {
     // 如果只有一行且有名字，按单个添加
     if (lines.length === 1 && name) {
+      const keyItem = { key: lines[0], name: name };
+      
+      // NewApi 添加特殊字段
+      if (currentProvider === "NewApi") {
+        keyItem.baseUrl = baseUrl;
+        keyItem.models = models;
+      }
+      
       const res = await apiFetch("/api/key-pool", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "add",
           provider: currentProvider,
-          keyItem: { key: lines[0], name: name },
+          keyItem,
         }),
       });
       if (!res.ok) throw new Error((await res.json()).error || "添加失败");
@@ -407,5 +530,243 @@ async function confirmAddKey() {
     await loadKeys(currentProvider);
   } catch (e) {
     alert(e.message);
+  }
+}
+
+// ==========================================
+// 编辑 Key 弹窗相关函数
+// ==========================================
+
+async function showEditKeyModal(id) {
+  try {
+    // 通过新接口获取完整的 Key 信息（不脱敏）
+    const res = await apiFetch(`/api/key-pool?provider=${currentProvider}&id=${id}`);
+    if (!res.ok) throw new Error("获取 Key 信息失败");
+    
+    const data = await res.json();
+    const key = data.keyItem;
+    
+    if (!key) {
+      alert("未找到该 Key");
+      return;
+    }
+
+    document.getElementById("editKeyModal").classList.add("active");
+    document.getElementById("editKeyId").value = key.id;
+    document.getElementById("editKeyName").value = key.name || "";
+    // 完整显示 Key，不做截断
+    document.getElementById("editKeyVal").value = key.key || "";
+
+    // 显示/隐藏 NewApi 特殊字段
+    const editNewApiFields = document.getElementById("editNewApiFields");
+    if (editNewApiFields) {
+      editNewApiFields.style.display = currentProvider === "NewApi" ? "block" : "none";
+      if (currentProvider === "NewApi") {
+        // 完整显示 baseUrl
+        document.getElementById("editKeyBaseUrl").value = key.baseUrl || "";
+        // 完整显示 models，逗号+空格分隔
+        document.getElementById("editKeyModels").value =
+          (key.models && Array.isArray(key.models)) ? key.models.join(", ") : "";
+      }
+    }
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+function closeEditKeyModal() {
+  document.getElementById("editKeyModal").classList.remove("active");
+}
+
+async function confirmEditKey() {
+  const id = document.getElementById("editKeyId").value;
+  const name = document.getElementById("editKeyName").value.trim();
+  const key = document.getElementById("editKeyVal").value.trim();
+
+  if (!key) {
+    alert("请输入 API Key");
+    return;
+  }
+
+  const keyItem = { name, key };
+
+  // NewApi 特殊字段
+  if (currentProvider === "NewApi") {
+    const baseUrl = document.getElementById("editKeyBaseUrl")?.value.trim() || "";
+    const modelsStr = document.getElementById("editKeyModels")?.value.trim() || "";
+    
+    if (!baseUrl) {
+      alert("请输入 API Base URL");
+      return;
+    }
+    
+    keyItem.baseUrl = baseUrl;
+    keyItem.models = modelsStr ? modelsStr.split(",").map(m => m.trim()).filter(m => m) : [];
+  }
+
+  try {
+    const res = await apiFetch("/api/key-pool", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "update",
+        provider: currentProvider,
+        id,
+        keyItem,
+      }),
+    });
+
+    if (!res.ok) throw new Error("更新失败");
+
+    closeEditKeyModal();
+    await loadKeys(currentProvider);
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+// ==========================================
+// NewApi 测试功能
+// ==========================================
+
+/**
+ * 测试 NewApi Key（从列表中）
+ */
+async function testNewApiKey(id) {
+  try {
+    // 获取 Key 信息
+    const res = await apiFetch(`/api/key-pool?provider=${currentProvider}&id=${id}`);
+    if (!res.ok) throw new Error("获取 Key 信息失败");
+    
+    const data = await res.json();
+    const key = data.keyItem;
+    
+    if (!key || !key.baseUrl || !key.key) {
+      alert("Key 信息不完整，无法测试");
+      return;
+    }
+
+    // 调用测试接口
+    const testRes = await apiFetch("/api/tools/test-newapi-key", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        baseUrl: key.baseUrl,
+        apiKey: key.key,
+      }),
+    });
+
+    if (!testRes.ok) {
+      const error = await testRes.json();
+      throw new Error(error.error || "测试失败");
+    }
+
+    const result = await testRes.json();
+    
+    if (result.ok) {
+      alert(`✅ 测试成功！\n\n找到 ${result.models.length} 个模型：\n${result.models.slice(0, 10).join(", ")}${result.models.length > 10 ? "\n..." : ""}`);
+    } else {
+      alert(`❌ 测试失败：${result.error}`);
+    }
+  } catch (e) {
+    alert(`❌ 测试失败：${e.message}`);
+  }
+}
+
+/**
+ * 测试 NewApi 连接（添加弹窗中）
+ */
+async function testNewApiConnection() {
+  const baseUrl = document.getElementById("newKeyBaseUrl")?.value.trim() || "";
+  const apiKey = document.getElementById("newKeyVal")?.value.trim() || "";
+
+  if (!baseUrl) {
+    alert("请输入 API Base URL");
+    return;
+  }
+
+  if (!apiKey) {
+    alert("请输入 API Key");
+    return;
+  }
+
+  try {
+    const testRes = await apiFetch("/api/tools/test-newapi-key", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        baseUrl,
+        apiKey,
+      }),
+    });
+
+    if (!testRes.ok) {
+      const error = await testRes.json();
+      throw new Error(error.error || "测试失败");
+    }
+
+    const result = await testRes.json();
+    
+    if (result.ok) {
+      // 自动填充模型列表
+      const modelsInput = document.getElementById("newKeyModels");
+      if (modelsInput && result.models.length > 0) {
+        modelsInput.value = result.models.join(", ");
+      }
+      alert(`✅ 测试成功！\n\n找到 ${result.models.length} 个模型并已自动填充到模型列表中。`);
+    } else {
+      alert(`❌ 测试失败：${result.error}`);
+    }
+  } catch (e) {
+    alert(`❌ 测试失败：${e.message}`);
+  }
+}
+
+/**
+ * 测试 NewApi 连接（编辑弹窗中）
+ */
+async function testEditNewApiConnection() {
+  const baseUrl = document.getElementById("editKeyBaseUrl")?.value.trim() || "";
+  const apiKey = document.getElementById("editKeyVal")?.value.trim() || "";
+
+  if (!baseUrl) {
+    alert("请输入 API Base URL");
+    return;
+  }
+
+  if (!apiKey) {
+    alert("请输入 API Key");
+    return;
+  }
+
+  try {
+    const testRes = await apiFetch("/api/tools/test-newapi-key", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        baseUrl,
+        apiKey,
+      }),
+    });
+
+    if (!testRes.ok) {
+      const error = await testRes.json();
+      throw new Error(error.error || "测试失败");
+    }
+
+    const result = await testRes.json();
+    
+    if (result.ok) {
+      // 自动填充模型列表
+      const modelsInput = document.getElementById("editKeyModels");
+      if (modelsInput && result.models.length > 0) {
+        modelsInput.value = result.models.join(", ");
+      }
+      alert(`✅ 测试成功！\n\n找到 ${result.models.length} 个模型并已自动填充到模型列表中。`);
+    } else {
+      alert(`❌ 测试失败：${result.error}`);
+    }
+  } catch (e) {
+    alert(`❌ 测试失败：${e.message}`);
   }
 }

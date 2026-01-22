@@ -43,6 +43,8 @@ export interface ApiKeysConfig {
   huggingface: string;
   /** Pollinations AI (通常不需要密钥) */
   pollinations: string;
+  /** NewApi 访问令牌 */
+  newapi: string;
 }
 
 /**
@@ -254,6 +256,7 @@ export interface AppConfig {
     modelscope: ModelScopeConfig;
     huggingface: HuggingFaceConfig;
     pollinations: PollinationsConfig;
+    newapi: BaseProviderConfig;
   };
   imageBed: ImageBedConfig;
   logging: LoggingConfig;
@@ -285,6 +288,12 @@ export interface KeyPoolItem {
   addedAt?: number;
   successCount?: number;
   totalCalls?: number;
+  
+  // NewApi 特殊字段
+  /** API 基础 URL (NewApi 专用) */
+  baseUrl?: string;
+  /** 可用模型列表 (NewApi 专用) */
+  models?: string[];
 }
 
 /**
@@ -467,6 +476,7 @@ const DEFAULT_CONFIG: AppConfig = {
     modelscope: "",
     huggingface: "",
     pollinations: "",
+    newapi: "",
   },
   defaults: {
     imageModel: "doubao-seedream-4-5-251128",
@@ -486,6 +496,15 @@ const DEFAULT_CONFIG: AppConfig = {
         "doubao-seedream-4-5-251128",
         "doubao-seedream-4-0-250828",
       ],
+    },
+    newapi: {
+      enabled: false,
+      apiUrl: "https://api.lianwusuoai.top",
+      defaultModel: "",
+      defaultSize: "1024x1024",
+      defaultCount: 1,
+      defaultEditCount: 1,
+      textModels: [],
     },
     gitee: {
       enabled: true,
@@ -727,6 +746,12 @@ const DEFAULT_RUNTIME_CONFIG: RuntimeConfig = {
       text: { model: "zimage", size: "1024x1024", quality: "standard", n: 2 },
       edit: { model: "nanobanana-pro", size: "1024x1024", quality: "standard", n: 1 },
       blend: { model: "kontext", size: "1024x1024", quality: "standard", n: 1 },
+    },
+    NewApi: {
+      enabled: false,
+      text: { model: "gpt-4o", size: "1024x1024", quality: "standard", n: 1, weight: 10 },
+      edit: { model: "gpt-4o", size: "1024x1024", quality: "standard", n: 1 },
+      blend: { model: "gpt-4o", size: "1024x1024", quality: "standard", n: 1 },
     },
     MockA: {
       text: { model: "sdxl", weight: 100 },
@@ -1154,6 +1179,9 @@ class ConfigManager {
   get POLLINATIONS_API_KEY() {
     return this.config.apiKeys.pollinations;
   }
+  get NEWAPI_API_KEY() {
+    return this.config.apiKeys.newapi;
+  }
 
   get DEFAULT_IMAGE_MODEL() {
     return this.config.defaults.imageModel;
@@ -1182,6 +1210,9 @@ class ConfigManager {
   }
   get PollinationsConfig() {
     return this.config.providers.pollinations;
+  }
+  get NewApiConfig() {
+    return this.config.providers.newapi;
   }
 
   get ImageBedConfig() {
@@ -1445,6 +1476,7 @@ export const GITEE_AI_API_KEY = configManager.GITEE_AI_API_KEY;
 export const MODELSCOPE_API_KEY = configManager.MODELSCOPE_API_KEY;
 export const HUGGINGFACE_API_KEY = configManager.HUGGINGFACE_API_KEY;
 export const POLLINATIONS_API_KEY = configManager.POLLINATIONS_API_KEY;
+export const NEWAPI_API_KEY = configManager.NEWAPI_API_KEY;
 
 export const DEFAULT_IMAGE_MODEL = configManager.DEFAULT_IMAGE_MODEL;
 export const DEFAULT_IMAGE_SIZE = configManager.DEFAULT_IMAGE_SIZE;
@@ -1456,6 +1488,7 @@ export const GiteeConfig = configManager.GiteeConfig;
 export const ModelScopeConfig = configManager.ModelScopeConfig;
 export const HuggingFaceConfig = configManager.HuggingFaceConfig;
 export const PollinationsConfig = configManager.PollinationsConfig;
+export const NewApiConfig = configManager.NewApiConfig;
 
 export const ImageBedConfig = configManager.ImageBedConfig;
 export const ModesConfig = configManager.ModesConfig;

@@ -33,6 +33,8 @@ import {
   logImageGenerationStart,
   logInputImages,
 } from "../core/logger.ts";
+import { promptOptimizerService } from "../core/prompt-optimizer.ts";
+import { getPromptOptimizerConfig } from "../config/manager.ts";
 import { withApiTiming } from "../middleware/timing.ts";
 
 /**
@@ -246,6 +248,19 @@ export class DoubaoProvider extends BaseProvider {
 
     try {
       const processedImages = request.images;
+
+      // Prompt 优化
+      const optimizerConfig = getPromptOptimizerConfig();
+      const shouldTranslate = optimizerConfig?.enableTranslate !== false;
+      const shouldExpand = optimizerConfig?.enableExpand === true;
+      const nForOpt = typeof request.n === "number" ? request.n : Number(request.n || 1);
+      
+      request.prompt = await promptOptimizerService.processPrompt(request.prompt, {
+        translate: shouldTranslate,
+        expand: shouldExpand,
+        imageIndex: undefined, // 原生多图模式只优化一次，不显示图片序号前缀
+        n: nForOpt
+      });
 
       // 1. 智能选择模型和尺寸
       const model = this.selectModel(request.model, hasImages);

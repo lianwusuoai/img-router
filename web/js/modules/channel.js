@@ -63,6 +63,15 @@ const POLLINATIONS_SIZES = [
   "256x256",
 ];
 
+const NEWAPI_SIZES = [
+  "1024x1024",
+  "1024x768",
+  "768x1024",
+  "1280x720",
+  "720x1280",
+  "512x512",
+];
+
 function parsePixelSize(size) {
   const m = String(size || "").match(/^(\d+)x(\d+)$/);
   if (!m) return null;
@@ -283,6 +292,12 @@ async function loadChannelConfig() {
     channelRuntimeConfig = config.runtimeConfig || { providers: {} };
 
     const providers = Array.isArray(config.providers) ? config.providers : [];
+    
+    // 🔧 修复：直接使用后端返回的模型列表，不再从前端重新获取
+    // 后端的 /api/config 接口已经正确合并了所有 NewApi Key 的模型列表
+    console.log("✅ 使用后端返回的 Provider 配置（包含 NewApi 合并后的模型列表）");
+    
+    // 使用后端返回的 providers 进行渲染
     renderAllChannels(providers);
   } catch (e) {
     console.error("加载渠道配置失败:", e);
@@ -304,10 +319,19 @@ function renderAllChannels(providers) {
 
   for (const provider of providers) {
     // 获取运行时配置中的默认值
-    // 兼容大小写：尝试直接匹配或转小写匹配
+    // 兼容大小写：尝试直接匹配、首字母大写、全小写
     let providerDefaults = (channelRuntimeConfig.providers || {})[provider.name];
     if (!providerDefaults) {
-      providerDefaults = (channelRuntimeConfig.providers || {})[provider.name.toLowerCase()] || {};
+      // 尝试首字母大写 + 其余小写 (如 Newapi -> NewApi)
+      const capitalized = provider.name.charAt(0).toUpperCase() + provider.name.slice(1);
+      providerDefaults = (channelRuntimeConfig.providers || {})[capitalized];
+    }
+    if (!providerDefaults) {
+      // 尝试全小写
+      providerDefaults = (channelRuntimeConfig.providers || {})[provider.name.toLowerCase()];
+    }
+    if (!providerDefaults) {
+      providerDefaults = {};
     }
 
     // Inject global default steps into provider object for fallback usage in UI
@@ -549,6 +573,7 @@ function buildSizeSelect(provider, task, currentValue, currentModel) {
   const isDoubao = provider.name === "Doubao";
   const isModelScope = provider.name === "ModelScope";
   const isPollinations = provider.name === "Pollinations";
+  const isNewApi = provider.name === "NewApi";
   let sizes = channelSupportedSizes && channelSupportedSizes.length > 0
     ? channelSupportedSizes
     : ["1024x1024", "1024x768", "768x1024", "1280x720"];
@@ -584,6 +609,8 @@ function buildSizeSelect(provider, task, currentValue, currentModel) {
     }
   } else if (isPollinations) {
     sizes = [...POLLINATIONS_SIZES];
+  } else if (isNewApi) {
+    sizes = [...NEWAPI_SIZES];
   }
 
   let html =
